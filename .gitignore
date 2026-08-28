@@ -1,0 +1,23 @@
+# OS / editor junk
+.DS_Store
+Thumbs.db
+__MACOSX/
+*.swp
+
+# Old zip backups (do not re-add zipped copies of tracked folders)
+*.zip
+
+# CodeIgniter runtime output
+application/logs/*
+!application/logs/index.html
+application/cache/*
+!application/cache/index.html
+
+# User-uploaded runtime files (may contain personal data - never commit)
+uploads/*
+!uploads/*/
+!uploads/**/.gitkeep
+
+# Local environment / secrets
+.env
+application/config/database.local.php
