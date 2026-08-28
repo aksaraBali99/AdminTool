@@ -13,6 +13,10 @@ This codebase was pulled from a Hostinger hosting export. It appears to be based
 
 ## Setup
 
+For a full walkthrough of running this locally (vhost config, HTTPS, database
+import, and fixes for the production-only `.htaccess` quirks below), see
+[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md).
+
 1. Point a PHP 7.x host (Apache/Nginx + `mod_rewrite`) at this directory, with `index.php` as the front controller.
 2. Create a MySQL database and set credentials via environment variables (`DB_HOST`, `DB_USER`, `DB_PASS`, `DB_NAME`) or by editing `application/config/database.php` directly for local dev. **Do not commit real credentials** — that file is meant to stay generic in this repo.
 3. This repo does **not** include a database dump/schema — none was present in the export this repo was built from. You'll need to obtain the schema (and any seed data) separately from the current hosting environment and import it before the app will run.
