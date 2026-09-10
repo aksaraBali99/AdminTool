@@ -23,13 +23,13 @@ final class AccessControlTest extends TestCase
     protected function setUp(): void
     {
         TestDb::pruneUsersCreatedByTests();
-        TestDb::resetFinanceAccountPassword();
+        TestDb::resetSeededAccountCredentials();
     }
 
     protected function tearDown(): void
     {
         TestDb::pruneUsersCreatedByTests();
-        TestDb::resetFinanceAccountPassword();
+        TestDb::resetSeededAccountCredentials();
     }
 
     public function test_lowest_privilege_role_cannot_create_a_superadmin_account(): void
@@ -82,22 +82,13 @@ final class AccessControlTest extends TestCase
         $hashAfter = TestDb::passwordHashFor('test_superadmin');
         $stillOriginalPassword = password_verify('TestPass123!', (string) $hashAfter);
 
+        // tearDown() unconditionally restores this account's known password
+        // regardless of what happens below — see TestDb::resetSeededAccountCredentials().
         $this->assertTrue(
             $stillOriginalPassword,
             'A finance-role account was able to overwrite the superadmin account\'s ' .
             'password via MasterData/add_pengguna. This endpoint must verify the ' .
             'caller is authorized to modify the target id_user.'
         );
-
-        // Restore regardless of outcome so other tests see the known-good password.
-        if (!$stillOriginalPassword) {
-            $reset = new \PDO(
-                'mysql:host=' . (getenv('TEST_DB_HOST') ?: '127.0.0.1') . ';dbname=admintool_test;charset=utf8mb4',
-                getenv('TEST_DB_USER') ?: 'root',
-                getenv('TEST_DB_PASS') ?: ''
-            );
-            $reset->prepare('UPDATE user SET password = ? WHERE username = ?')
-                ->execute(['$2y$10$HVXT1Uy83kGgAkGeyzvYleKHgJnKbD//2YA5lVUurjJs2GoE4T43a', 'test_superadmin']);
-        }
     }
 }

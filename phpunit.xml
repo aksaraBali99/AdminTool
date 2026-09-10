@@ -8,5 +8,8 @@
         <testsuite name="security">
             <directory>tests/Security</directory>
         </testsuite>
+        <testsuite name="financial">
+            <directory>tests/Financial</directory>
+        </testsuite>
     </testsuites>
 </phpunit>
