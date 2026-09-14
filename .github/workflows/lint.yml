@@ -1,0 +1,30 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  php-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: none
+          coverage: none
+
+      - name: php -l every tracked PHP file
+        run: |
+          set -euo pipefail
+          status=0
+          # application/libraries/PHPExcel/* is a vendored, unmaintained
+          # third-party library using curly-brace string/array offset syntax
+          # that PHP 8 removed outright (fatal parse error) - a preexisting
+          # incompatibility, not something this lint should flag on every run.
+          while IFS= read -r -d '' file; do
+            php -l "$file" || status=1
+          done < <(git ls-files -z -- '*.php' ':!application/libraries/PHPExcel/*')
+          exit $status
