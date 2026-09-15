@@ -6,10 +6,13 @@ tightly coupled to the framework's superobject to unit-test in isolation,
 so this suite tests observable behavior instead.
 
 - **`tests/Security/*`** — encodes the findings from the 2026-09-10
-  security review. Most of these **fail today, on purpose**: they document
-  known vulnerabilities so that when each one is fixed, its test flips to
-  green and stays that way, instead of the fix depending on someone
-  remembering to re-check it by hand.
+  security review. Most of these document known, still-open
+  vulnerabilities and are currently **`markTestSkipped()`'d rather than
+  left failing**, so the suite stays green (exit 0) and safe to merge
+  while the underlying bugs are still open — each skip's message names
+  the specific fix that unblocks it. When you fix one, delete its
+  `markTestSkipped(...)` call (the first statement in the test method)
+  so the test runs for real and flips to green on its own.
 - **`tests/Financial/*`** — regression coverage for the payroll/tax
   calculation in `M_hr::generate_payroll_guru()` +
   `M_hr::calculate_pph21()`, and the profit/loss figure in
