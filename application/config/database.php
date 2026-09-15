@@ -14,6 +14,7 @@ $query_builder = TRUE;
 $db['default'] = array(
 	'dsn'	=> '',
 	'hostname' => getenv('DB_HOST') ?: 'localhost',
+	'port' => getenv('DB_PORT') ?: '',
 	'username' => getenv('DB_USER') ?: '',
 	'password' => getenv('DB_PASS') ?: '',
 	'database' => getenv('DB_NAME') ?: '',

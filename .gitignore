@@ -28,6 +28,10 @@ vendor/
 # PHPUnit result cache
 .phpunit.cache/
 
+# Session files written by the test harness's throwaway PHP server
+# (tests/run-tests.sh, tests/serve-test-app.sh)
+tests/.session-tmp/
+
 # Playwright (e2e/) - npm dependencies and run artifacts
 e2e/node_modules/
 e2e/test-results/
