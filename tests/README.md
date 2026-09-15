@@ -67,8 +67,9 @@ see the comment in `tests/fixtures/seed_test_data.sql` and
   `dropAllTables()`.
 - **The stored-XSS finding** in `crm/lead.php` isn't covered by this
   HTTP-level suite — proving it requires rendering the page in a real
-  browser and observing script execution, which belongs in the Playwright
-  UI suite, not here.
+  browser and observing script execution. It belongs in the Playwright
+  suite at `../e2e/` instead of here, but isn't covered there yet either -
+  today that suite only has a login+dashboard smoke test.
 - **PHPExcel XXE specifically** — `FileUploadTest` proves the endpoint has
   no file-type allowlist (the actual root cause), without constructing a
   working XXE payload.
