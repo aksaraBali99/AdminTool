@@ -1,10 +1,15 @@
 <?php
 class M_dashboard extends CI_Model
 {
-    public function get_total_peserta()
+    public function get_total_peserta($month, $year)
     {
         $this->db->from('peserta');
-        $this->db->where('status_siswa', 'Aktif');
+        $this->db->where('status_siswa', 'Aktif'); 
+        $this->db->where('status', 'Registrasi Kelas'); 
+
+        $where_clause = "(YEAR(input_at) < $year OR (YEAR(input_at) = $year AND MONTH(input_at) <= $month))";
+        $this->db->where($where_clause);
+        
         return $this->db->count_all_results();
     }
 
