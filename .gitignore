@@ -21,3 +21,9 @@ uploads/*
 # Local environment / secrets
 .env
 application/config/database.local.php
+
+# Composer dependencies (installed via `composer install`)
+vendor/
+
+# PHPUnit result cache
+.phpunit.cache/
