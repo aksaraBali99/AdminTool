@@ -1,0 +1,117 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+# There is no database dump in the repo (see docs/LOCAL_SETUP.md - it was
+# stripped before the initial push), so tests/fixtures/schema.sql (a
+# structure-only `mysqldump --no-data` export, no real data) is what lets a
+# from-scratch CI database exist at all. tests/fixtures/seed_test_data.sql
+# only INSERTs into tables it assumes already exist.
+env:
+  TEST_DB_HOST: 127.0.0.1
+  TEST_DB_PORT: 3306
+  TEST_DB_USER: root
+  TEST_DB_PASS: root
+
+jobs:
+  phpunit:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: admintool_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, curl, dom, gd, mysqli, zip, xml
+          coverage: none
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer
+          key: composer-${{ hashFiles('composer.lock') }}
+
+      - run: composer install --no-interaction --prefer-dist
+
+      - name: Load schema into the empty CI database
+        run: mysql -uroot -proot -h127.0.0.1 -P3306 admintool_test < tests/fixtures/schema.sql
+
+      - name: Run PHPUnit suite (tests/run-tests.sh reseeds fixture data itself)
+        run: composer test
+
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: admintool_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, curl, dom, gd, mysqli, zip, xml
+          coverage: none
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer
+          key: composer-${{ hashFiles('composer.lock') }}
+
+      - run: composer install --no-interaction --prefer-dist
+
+      - name: Load schema into the empty CI database
+        run: mysql -uroot -proot -h127.0.0.1 -P3306 admintool_test < tests/fixtures/schema.sql
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - working-directory: e2e
+        run: npm ci
+
+      - name: Install Playwright's browser (Chromium only - it's all this suite uses)
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright suite (tests/serve-test-app.sh reseeds fixture data itself)
+        working-directory: e2e
+        run: npx playwright test
+
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: e2e/test-results/
+          retention-days: 7
