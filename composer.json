@@ -17,7 +17,9 @@
 		"paragonie/random_compat": "Provides better randomness in PHP 5.x"
 	},
 	"scripts": {
-		"test:security": "bash tests/run-tests.sh",
+		"test": "bash tests/run-tests.sh",
+		"test:security": "bash tests/run-tests.sh --testsuite security",
+		"test:financial": "bash tests/run-tests.sh --testsuite financial",
 		"post-install-cmd": [
 			"sed -i s/name{0}/name[0]/ vendor/mikey179/vfsstream/src/main/php/org/bovigo/vfs/vfsStream.php"
 		],

@@ -23,6 +23,12 @@ TRUNCATE TABLE jadwal_kelas;
 TRUNCATE TABLE pengajar;
 TRUNCATE TABLE data_jenis_kelas;
 TRUNCATE TABLE data_branch;
+TRUNCATE TABLE pph21_komponen;
+TRUNCATE TABLE absensi_guru;
+TRUNCATE TABLE payroll_guru;
+TRUNCATE TABLE tagihan;
+TRUNCATE TABLE pengeluaran;
+TRUNCATE TABLE audit_log;
 
 -- Test accounts, one per role. Password for all three: TestPass123!
 INSERT INTO user (id_user, username, password, jabatan, nama, jk, usia, no_hp) VALUES
@@ -39,8 +45,51 @@ INSERT INTO data_branch (id_branch, nama_branch, alamat, status) VALUES
 INSERT INTO data_jenis_kelas (id_jenis_kelas, nama_kelas, gender, usia, tipe, biaya, biaya_regis, biaya_buku, nama_buku) VALUES
 (1, 'Test Class', 'all', '5-12', 'anak', 500000, 100000, 50000, 'Test Book');
 
+-- Tariffs chosen so that generate_payroll_guru's annualized subtotal
+-- (subtotal * 12) lands in the SECOND pph21_komponen bracket below, not the
+-- first/only one — proving the "pick the highest applicable bracket" query
+-- actually discriminates between brackets, not just returning a trivial
+-- single-row result. See tests/Financial/PayrollCalculationTest.php.
 INSERT INTO pengajar (id_pengajar, nama, jk, no_hp, no_rek, tarif_per_jam_anak, tarif_per_jam_dewasa, biaya_transport) VALUES
-(1, 'Test Teacher', 'L', '5550000010', '0000000000', 50000, 75000, 25000);
+(1, 'Test Teacher', 'L', '5550000010', '0000000000', 100000, 75000, 50000);
+
+-- Two brackets: annualized income under 60,000,000 pays 5%, at/over pays 15%.
+INSERT INTO pph21_komponen (id, nama_komponen, batas_bawah, batas_atas, persentase, status) VALUES
+(1, 'Test Bracket 1', 0, 60000000, 5.00, 'aktif'),
+(2, 'Test Bracket 2', 60000000, 250000000, 15.00, 'aktif');
+
+-- 10 "Hadir" (present) days in June 2026, 5 hours/day of "anak" class, one
+-- arrival each -> total_jam_anak=50, total_kedatangan=10. With the tariffs
+-- above: honor_anak = 50 * 100000 = 5,000,000; transport = 10 * 50000 =
+-- 500,000; subtotal = 5,500,000; annualized = 66,000,000, which lands in
+-- Test Bracket 2 (15%) -> pph21_nominal = 825,000; gaji_bersih = 4,675,000.
+INSERT INTO absensi_guru (id_guru, tanggal, jam_mulai, jam_selesai, total_jam, status_hadir, id_branch, tipe_kelas, tarif_per_jam, biaya_transport, jumlah_kedatangan, is_deleted) VALUES
+(1, '2026-06-01', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-02', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-03', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-04', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-05', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-08', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-09', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-10', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-11', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+(1, '2026-06-12', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0),
+-- Decoy rows that generate_payroll_guru's query must exclude:
+(1, '2026-05-15', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 0), -- wrong month
+(1, '2026-06-15', '09:00:00', '14:00:00', 5.00, 'Alpha', 1, 'anak', 100000, 50000, 1, 0), -- not Hadir
+(1, '2026-06-16', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 1); -- is_deleted
+
+-- Income (Paid, June 2026) and a decoy in a different month/status that
+-- get_laba_rugi must exclude. See tests/Financial/LabaRugiTest.php.
+INSERT INTO tagihan (id_peserta, bulan, tahun, jumlah, status_bayar, tipe, tgl_bayar) VALUES
+(1, 6, 2026, 2000000, 'Paid', 'Biaya Kelas', '2026-06-05 10:00:00'),
+(1, 6, 2026, 500000, 'Pending', 'Biaya Kelas', NULL), -- decoy: not Paid
+(1, 7, 2026, 1000000, 'Paid', 'Biaya Kelas', '2026-07-05 10:00:00'); -- decoy: wrong month
+
+-- Expenses (June 2026) and a decoy in a different month.
+INSERT INTO pengeluaran (tanggal, kategori, keterangan, jumlah) VALUES
+('2026-06-15', 'Test Expense', 'Fixture expense', 700000),
+('2026-07-15', 'Test Expense', 'Decoy expense, wrong month', 300000);
 
 INSERT INTO jadwal_kelas (id, id_kelas, id_guru, hari, jam_mulai, jam_selesai, id_branch, tipe_kelas, is_aktif) VALUES
 (1, 1, 1, 1, '09:00:00', '10:00:00', 1, 'anak', 1);
