@@ -28,7 +28,7 @@ class Dashboard extends CI_Controller
         if ($jabatan == 'superadmin') {
             // Superadmin - Financial Dashboard
             $data['isi'] = 'dashboard/index';
-            $data['total_peserta'] = $this->m_dashboard->get_total_peserta();
+            $data['total_peserta'] = $this->m_dashboard->get_total_peserta($bulan, $tahun);
             $data['total_pengajar'] = $this->m_dashboard->get_total_pengajar();
             $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru();
             
@@ -51,7 +51,7 @@ class Dashboard extends CI_Controller
         } elseif ($jabatan == 'admin') {
             // Admin - Placeholder untuk dashboard khusus (akan dijelaskan user)
             $data['isi'] = 'dashboard/admin';
-            $data['total_peserta'] = $this->m_dashboard->get_total_peserta();
+            $data['total_peserta'] = $this->m_dashboard->get_total_peserta($bulan, $tahun);
             $data['total_pengajar'] = $this->m_dashboard->get_total_pengajar();
             $data['total_kelas'] = $this->m_dashboard->get_total_kelas();
             $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru();
