@@ -14,12 +14,20 @@ so this suite tests observable behavior instead.
   `markTestSkipped(...)` call (the first statement in the test method)
   so the test runs for real and flips to green on its own.
 - **`tests/Financial/*`** — regression coverage for the payroll/tax
-  calculation in `M_hr::generate_payroll_guru()` +
-  `M_hr::calculate_pph21()`, and the profit/loss figure in
-  `M_dashboard::get_laba_rugi()`. These are real-money calculations, so
-  they're asserted against known, hand-verified expected values from
-  seeded fixture data — not just "did it run without erroring". Both
-  currently pass.
+  calculation in `M_hr::generate_payroll_guru()` + `M_hr::calculate_pph21()`,
+  and every calculation `M_dashboard.php` renders on the superadmin, admin,
+  and finance dashboards (profit/loss, period totals, the cumulative active-
+  student count, month-over-month payment percentage change, per-category
+  pie chart sums, and the two "recent activity" listings). All are asserted
+  against known, hand-verified expected values from seeded fixture data —
+  not just "did it run without erroring" — and all currently pass.
+  `M_dashboard` values the controller computes but no view actually
+  displays (`saldo_kas`, `utang_payroll`, `total_pengajar`, `total_kelas`,
+  `total_pengeluaran` on the finance dashboard, `jumlah_transaksi`/
+  `chart_income`, and the two orphaned `get_pembelajaran_per_bulan()`/
+  `get_peserta_baru_per_3_bulan()` AJAX endpoints) are deliberately NOT
+  covered here — there's nothing observable over HTTP to assert against
+  per this suite's black-box philosophy above.
 
 ## Running
 
@@ -55,6 +63,12 @@ exactly `admintool_test`, and the seed fixture is built so that even a
 successful (i.e. vulnerable) hit on `Cron` finds zero matching rows —
 see the comment in `tests/fixtures/seed_test_data.sql` and
 `tests/Security/UnauthenticatedEndpointsTest.php` before changing either.
+If a test needs a `peserta` row shaped like Cron's filter
+(`status='Registrasi Kelas'` AND `status_siswa='Aktif'`) to exercise its
+positive case at all — `TotalPesertaTest` does, for example — create it
+dynamically via `TestDb::insertPeserta()` in `setUp()` and delete it
+unconditionally in `tearDown()`, rather than adding it to this static
+fixture.
 
 ## What's deliberately NOT covered here
 
@@ -81,10 +95,19 @@ see the comment in `tests/fixtures/seed_test_data.sql` and
 
 - `tests/bootstrap.php` — safety rail + constants, loaded by PHPUnit
 - `tests/Support/ApiClient.php` — Guzzle wrapper (login-as-role, cookie jar)
-- `tests/Support/TestDb.php` — direct PDO access for assertions/cleanup
+- `tests/Support/TestDb.php` — direct PDO access for assertions/cleanup, and for dynamic setup/teardown of rows a test needs but the static fixture can't safely contain (see `TotalPesertaTest`/`TotalPesertaBaruTest`/`PembayaranBulananTest` below)
+- `tests/Support/DashboardHtml.php` — extracts one labeled stat's rendered value out of a Dashboard page (a bare integer isn't a safe `assertStringContainsString()` target on its own)
 - `tests/fixtures/seed_test_data.sql` — synthetic-only fixture data
 - `tests/Security/*Test.php` — access control, CSRF, session, upload, and unauthenticated-endpoint checks
-- `tests/Financial/*Test.php` — payroll/PPh21 and profit-loss calculation checks
+- `tests/Financial/PayrollCalculationTest.php` — payroll/PPh21 calculation checks
+- `tests/Financial/LabaRugiTest.php` — profit/loss (superadmin + finance dashboards)
+- `tests/Financial/TotalPesertaTest.php` — cumulative "active as of" student count (superadmin + admin dashboards)
+- `tests/Financial/TotalPesertaBaruTest.php` — students converted this real-world month (all three dashboards)
+- `tests/Financial/PeriodTotalsTest.php` — total income + unpaid SPP for a given month/year
+- `tests/Financial/TotalMuridTrialTest.php` — trial-student count (admin dashboard)
+- `tests/Financial/PembayaranBulananTest.php` — month-over-month payment percentage change (finance dashboard)
+- `tests/Financial/KategoriChartsTest.php` — the two per-category pie charts (superadmin dashboard)
+- `tests/Financial/RincianListingsTest.php` — the two "recent activity" tables (superadmin dashboard)
 
 ## A note on test isolation
 
