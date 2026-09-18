@@ -79,4 +79,90 @@ class TestDb
         $stmt->execute([$hash, 'admin', 'test_admin']);
         $stmt->execute([$hash, 'finance', 'test_finance']);
     }
+
+    /**
+     * Inserts a `peserta` row with sensible defaults for every NOT NULL
+     * column, overridable via $overrides. Returns the new id_peserta.
+     *
+     * For tests that need a row shaped like Cron's active-student filter
+     * (status='Registrasi Kelas' AND status_siswa='Aktif') this is
+     * deliberately the only way to get one - never add such a row to the
+     * static seed_test_data.sql fixture (see the safety note there and in
+     * tests/README.md). Callers doing that MUST delete it in tearDown()
+     * via deletePesertaById(), unconditionally, so it never outlives the
+     * single test method that created it.
+     */
+    public static function insertPeserta(array $overrides = []): int
+    {
+        $defaults = [
+            'nama_ortu' => 'Dynamic Test Parent',
+            'no_hp' => '5559999900',
+            'nama_anak' => 'Dynamic Test Child',
+            'status' => 'Trial',
+            'catatan' => '',
+            'jk' => 'L',
+            'id_jenis_kelas' => null,
+            'is_aktif' => 1,
+            'tgl_non_aktif' => '2000-01-01',
+            'status_siswa' => 'Aktif',
+            'input_at' => date('Y-m-d H:i:s'),
+            'tgl_konversi_siswa' => null,
+        ];
+        $data = array_merge($defaults, $overrides);
+        $cols = array_keys($data);
+        $sql = 'INSERT INTO peserta (' . implode(', ', $cols) . ') VALUES (' . implode(', ', array_fill(0, count($cols), '?')) . ')';
+        self::connect()->prepare($sql)->execute(array_values($data));
+        return (int) self::connect()->lastInsertId();
+    }
+
+    public static function deletePesertaById(int $idPeserta): void
+    {
+        self::connect()->prepare('DELETE FROM peserta WHERE id_peserta = ?')->execute([$idPeserta]);
+    }
+
+    /** Inserts a `tagihan` row with sensible defaults, overridable via $overrides. Returns the new id_tagihan. */
+    public static function insertTagihan(array $overrides = []): int
+    {
+        $defaults = [
+            'id_peserta' => 1,
+            'bulan' => (int) date('m'),
+            'tahun' => (int) date('Y'),
+            'jumlah' => 100000,
+            'status_bayar' => 'Paid',
+            'tipe' => 'Biaya Kelas',
+            'tgl_bayar' => date('Y-m-d H:i:s'),
+        ];
+        $data = array_merge($defaults, $overrides);
+        $cols = array_keys($data);
+        $sql = 'INSERT INTO tagihan (' . implode(', ', $cols) . ') VALUES (' . implode(', ', array_fill(0, count($cols), '?')) . ')';
+        self::connect()->prepare($sql)->execute(array_values($data));
+        return (int) self::connect()->lastInsertId();
+    }
+
+    public static function deleteTagihanById(int $idTagihan): void
+    {
+        self::connect()->prepare('DELETE FROM tagihan WHERE id_tagihan = ?')->execute([$idTagihan]);
+    }
+
+    /**
+     * Mirrors M_dashboard::get_pembayaran_bulanan()'s own SUM exactly, so
+     * tests can read the pre-existing baseline for "this month"/"last
+     * month" before inserting their own row, instead of assuming a clean
+     * slate that a fixed-date fixture (everything else is pinned to June
+     * 2026) can't guarantee for whatever month a test happens to run in.
+     */
+    public static function sumPaidTagihan(int $bulan, int $tahun): float
+    {
+        $stmt = self::connect()->prepare("SELECT COALESCE(SUM(jumlah), 0) FROM tagihan WHERE status_bayar = 'Paid' AND bulan = ? AND tahun = ?");
+        $stmt->execute([$bulan, $tahun]);
+        return (float) $stmt->fetchColumn();
+    }
+
+    /** Mirrors M_dashboard::get_total_peserta_baru()'s own COUNT exactly - see sumPaidTagihan()'s docblock for why. */
+    public static function countPesertaBaru(int $bulan, int $tahun): int
+    {
+        $stmt = self::connect()->prepare('SELECT COUNT(*) FROM peserta WHERE MONTH(tgl_konversi_siswa) = ? AND YEAR(tgl_konversi_siswa) = ?');
+        $stmt->execute([$bulan, $tahun]);
+        return (int) $stmt->fetchColumn();
+    }
 }
