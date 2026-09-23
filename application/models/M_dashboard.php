@@ -13,11 +13,20 @@ class M_dashboard extends CI_Model
         return $this->db->count_all_results();
     }
 
-    public function get_total_peserta_baru()
+    public function get_total_peserta_baru($month = null, $year = null)
     {
+        if ($month == null || $year == null) {
+            $month = date('m');
+            $year = date('Y');
+        }
+
         $this->db->from('peserta');
-        $this->db->where('MONTH(tgl_konversi_siswa)', date('m'));
-        $this->db->where('YEAR(tgl_konversi_siswa)', date('Y'));
+        // $this->db->where('status_siswa', 'Aktif'); 
+        $this->db->where('status', 'Registrasi Kelas'); 
+
+        $this->db->where("MONTH(COALESCE(tgl_konversi_siswa, input_at)) = $month");
+        $this->db->where("YEAR(COALESCE(tgl_konversi_siswa, input_at)) = $year");
+        
         return $this->db->count_all_results();
     }
 
@@ -31,10 +40,12 @@ class M_dashboard extends CI_Model
         return $this->db->count_all('data_jenis_kelas');
     }
     
-    public function get_total_murid_trial()
+    public function get_total_murid_trial($month, $year)
     {
         $this->db->from('peserta');
-        $this->db->where('status_siswa', 'Trial');
+        $this->db->where('status_siswa', 'Jadwal Trial');
+        $this->db->where('MONTH(input_at)', $month);
+        $this->db->where('YEAR(input_at)', $year);
         return $this->db->count_all_results();
     }
 
