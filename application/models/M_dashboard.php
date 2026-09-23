@@ -50,17 +50,27 @@ class M_dashboard extends CI_Model
         return $this->db->count_all('data_jenis_kelas');
     }
     
-    public function get_total_murid_trial($month, $year)
+    public function get_total_murid_trial($month = null, $year = null)
     {
+        if ($month == null || $year == null) {
+            $month = date('m');
+            $year = date('Y');
+        }
+
         $this->db->from('peserta');
         $this->db->where('status', 'Jadwal Trial');   
-        $this->db->where('MONTH(input_at)', $month);
-        $this->db->where('YEAR(input_at)', $year);
+        $this->db->where('MONTH(input_at)', $month, FALSE);
+        $this->db->where('YEAR(input_at)', $year, FALSE);
         return $this->db->count_all_results();
     }
 
-    public function get_total_pembayaran($month, $year)
+    public function get_total_pembayaran($month = null, $year = null)
     {
+        if ($month == null || $year == null) {
+            $month = date('m');
+            $year = date('Y');
+        }
+
         $this->db->select_sum('jumlah');
         $this->db->where('status_bayar', 'Paid');
         $this->db->where('bulan', $month);
@@ -69,11 +79,16 @@ class M_dashboard extends CI_Model
         return $query->row()->jumlah ?: 0;
     }
 
-    public function get_total_pengeluaran($month, $year)
+    public function get_total_pengeluaran($month = null, $year = null)
     {
+        if ($month == null || $year == null) {
+            $month = date('m');
+            $year = date('Y');
+        }
+
         $this->db->select_sum('jumlah');
-        $this->db->where('MONTH(tanggal)', $month);
-        $this->db->where('YEAR(tanggal)', $year);
+        $this->db->where('MONTH(tanggal)', $month, FALSE);
+        $this->db->where('YEAR(tanggal)', $year, FALSE);
         $query = $this->db->get('pengeluaran');
         return $query->row()->jumlah ?: 0;
     }
