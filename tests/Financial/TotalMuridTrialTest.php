@@ -30,7 +30,7 @@ final class TotalMuridTrialTest extends TestCase
 
         $value = DashboardHtml::cardTitleValue((string) $response->getBody(), 'Murid Trial');
         $this->assertSame(
-            '1',
+            '2',
             $value,
             "Expected 2 (based on dummy data where status='Jadwal Trial'). " .
             "If this is different, the query may be reading the wrong column, ignoring the month filter, " .

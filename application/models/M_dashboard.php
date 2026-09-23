@@ -35,8 +35,8 @@ class M_dashboard extends CI_Model
         // $this->db->where('status_siswa', 'Aktif'); 
         $this->db->where('status', 'Registrasi Kelas'); 
 
-        $this->db->where("MONTH(COALESCE(tgl_konversi_siswa, input_at)) = $month");
-        $this->db->where("YEAR(COALESCE(tgl_konversi_siswa, input_at)) = $year");
+        $this->db->where('MONTH(COALESCE(tgl_konversi_siswa, input_at))', $month, FALSE);
+        $this->db->where('YEAR(COALESCE(tgl_konversi_siswa, input_at))', $year, FALSE);
         
         return $this->db->count_all_results();
     }
