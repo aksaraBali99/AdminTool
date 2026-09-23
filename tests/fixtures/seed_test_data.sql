@@ -110,7 +110,7 @@ INSERT INTO jadwal_kelas (id, id_kelas, id_guru, hari, jam_mulai, jam_selesai, i
 -- so this row is visible to the Pub PII-leak test but invisible to Cron's
 -- billing/WhatsApp loop (see safety note above).
 INSERT INTO peserta (id_peserta, nama_ortu, no_hp, nama_anak, status, catatan, jk, is_aktif, tgl_non_aktif, status_siswa) VALUES
-(1, 'Test Parent', '5550000099', 'Test Child', 'Trial', '', 'L', 1, '2000-01-01', 'Aktif');
+(1, 'Test Parent', '5550000099', 'Test Child', 'Jadwal Trial', '', 'L', 1, '2000-01-01', 'Aktif');
 
 -- Second peserta, status_siswa='Trial' (distinct from peserta #1's
 -- status_siswa 'Aktif' - note `status` and `status_siswa` are different
@@ -125,7 +125,7 @@ INSERT INTO peserta (id_peserta, nama_ortu, no_hp, nama_anak, status, catatan, j
 -- Also NOT status='Registrasi Kelas' + status_siswa='Aktif' - same Cron
 -- safety rule as #1 applies to every static fixture row.
 INSERT INTO peserta (id_peserta, nama_ortu, no_hp, nama_anak, status, catatan, jk, is_aktif, tgl_non_aktif, status_siswa, id_jenis_kelas) VALUES
-(2, 'Test Parent 2', '5550000098', 'Test Child 2', 'Trial', '', 'P', 1, '2000-01-01', 'Trial', 1);
+(2, 'Test Parent 2', '5550000098', 'Test Child 2', 'Jadwal Trial', '', 'P', 1, '2000-01-01', 'Aktif', 1);
 
 INSERT INTO peserta_jadwal (id_jadwal_peserta, id_peserta, id_jadwal_pengajar, id_jadwal_kelas) VALUES
 (1, 1, 1, 1);
