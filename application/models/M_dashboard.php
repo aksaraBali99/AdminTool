@@ -43,7 +43,7 @@ class M_dashboard extends CI_Model
     public function get_total_murid_trial($month, $year)
     {
         $this->db->from('peserta');
-        $this->db->where('status_siswa', 'Jadwal Trial');
+        $this->db->where('status', 'Jadwal Trial');   
         $this->db->where('MONTH(input_at)', $month);
         $this->db->where('YEAR(input_at)', $year);
         return $this->db->count_all_results();
