@@ -80,11 +80,23 @@ INSERT INTO absensi_guru (id_guru, tanggal, jam_mulai, jam_selesai, total_jam, s
 (1, '2026-06-16', '09:00:00', '14:00:00', 5.00, 'Hadir', 1, 'anak', 100000, 50000, 1, 1); -- is_deleted
 
 -- Income (Paid, June 2026) and a decoy in a different month/status that
--- get_laba_rugi must exclude. See tests/Financial/LabaRugiTest.php.
+-- get_laba_rugi must exclude. See tests/Financial/LabaRugiTest.php. The
+-- July row is a "decoy" only for that June-specific test - year-scoped
+-- queries (get_rincian_pendapatan, get_pendapatan_per_kategori for 2026)
+-- correctly include it too; see tests/Financial/RincianListingsTest.php.
 INSERT INTO tagihan (id_peserta, bulan, tahun, jumlah, status_bayar, tipe, tgl_bayar) VALUES
 (1, 6, 2026, 2000000, 'Paid', 'Biaya Kelas', '2026-06-05 10:00:00'),
 (1, 6, 2026, 500000, 'Pending', 'Biaya Kelas', NULL), -- decoy: not Paid
-(1, 7, 2026, 1000000, 'Paid', 'Biaya Kelas', '2026-07-05 10:00:00'); -- decoy: wrong month
+(1, 7, 2026, 1000000, 'Paid', 'Biaya Kelas', '2026-07-05 10:00:00'); -- decoy: wrong month (for June-specific queries only)
+
+-- Peserta #2's tagihan: the only ones with a peserta whose id_jenis_kelas is
+-- actually set, so these are the only rows get_pendapatan_per_kategori(2026)
+-- can see at all (see the comment on peserta #2 above). Decoys prove it
+-- still filters by status_bayar and tahun even within that narrower set.
+INSERT INTO tagihan (id_peserta, bulan, tahun, jumlah, status_bayar, tipe, tgl_bayar) VALUES
+(2, 8, 2026, 300000, 'Paid', 'Biaya Kelas', '2026-08-05 10:00:00'),
+(2, 8, 2026, 999999, 'Pending', 'Biaya Kelas', NULL), -- decoy: not Paid
+(2, 5, 2025, 111111, 'Paid', 'Biaya Kelas', '2025-05-05 10:00:00'); -- decoy: wrong year
 
 -- Expenses (June 2026) and a decoy in a different month.
 INSERT INTO pengeluaran (tanggal, kategori, keterangan, jumlah) VALUES
@@ -99,6 +111,21 @@ INSERT INTO jadwal_kelas (id, id_kelas, id_guru, hari, jam_mulai, jam_selesai, i
 -- billing/WhatsApp loop (see safety note above).
 INSERT INTO peserta (id_peserta, nama_ortu, no_hp, nama_anak, status, catatan, jk, is_aktif, tgl_non_aktif, status_siswa) VALUES
 (1, 'Test Parent', '5550000099', 'Test Child', 'Trial', '', 'L', 1, '2000-01-01', 'Aktif');
+
+-- Second peserta, status_siswa='Trial' (distinct from peserta #1's
+-- status_siswa 'Aktif' - note `status` and `status_siswa` are different
+-- columns; #1's `status`='Trial' is a CRM lead-stage value, unrelated to
+-- this). Serves two Dashboard tests: M_dashboard::get_total_murid_trial()
+-- needs at least one Trial row plus a non-Trial decoy (peserta #1 is that
+-- decoy) to prove the filter discriminates; M_dashboard::get_pendapatan_per_kategori()
+-- needs a peserta with `id_jenis_kelas` actually set, since it's an INNER
+-- JOIN to data_jenis_kelas and peserta #1 has NULL there (left untouched,
+-- so #1's tagihan stays excluded from that one query, matching today's
+-- real behavior).
+-- Also NOT status='Registrasi Kelas' + status_siswa='Aktif' - same Cron
+-- safety rule as #1 applies to every static fixture row.
+INSERT INTO peserta (id_peserta, nama_ortu, no_hp, nama_anak, status, catatan, jk, is_aktif, tgl_non_aktif, status_siswa, id_jenis_kelas) VALUES
+(2, 'Test Parent 2', '5550000098', 'Test Child 2', 'Trial', '', 'P', 1, '2000-01-01', 'Trial', 1);
 
 INSERT INTO peserta_jadwal (id_jadwal_peserta, id_peserta, id_jadwal_pengajar, id_jadwal_kelas) VALUES
 (1, 1, 1, 1);

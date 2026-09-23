@@ -1,13 +1,24 @@
 <?php
 class M_dashboard extends CI_Model
 {
-    public function get_total_peserta($month, $year)
+    public function get_total_peserta($month = null, $year = null)
     {
+        if ($month == null || $year == null) {
+            $month = date('m');
+            $year = date('Y');
+        }
+
         $this->db->from('peserta');
         $this->db->where('status_siswa', 'Aktif'); 
         $this->db->where('status', 'Registrasi Kelas'); 
-
-        $where_clause = "(YEAR(input_at) < $year OR (YEAR(input_at) = $year AND MONTH(input_at) <= $month))";
+        
+        $where_clause = "(
+            YEAR(COALESCE(tgl_konversi_siswa, input_at)) < $year 
+            OR (
+                YEAR(COALESCE(tgl_konversi_siswa, input_at)) = $year 
+                AND MONTH(COALESCE(tgl_konversi_siswa, input_at)) <= $month
+            )
+        )";
         $this->db->where($where_clause);
         
         return $this->db->count_all_results();
@@ -29,7 +40,6 @@ class M_dashboard extends CI_Model
         
         return $this->db->count_all_results();
     }
-
 
     public function get_total_pengajar()
     {
