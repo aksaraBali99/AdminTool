@@ -31,12 +31,14 @@ class M_dashboard extends CI_Model
             $year = date('Y');
         }
 
+        $month = (int) $month;
+        $year = (int) $year;
+
         $this->db->from('peserta');
-        // $this->db->where('status_siswa', 'Aktif'); 
         $this->db->where('status', 'Registrasi Kelas'); 
 
-        $this->db->where('MONTH(COALESCE(tgl_konversi_siswa, input_at)) =', $month, FALSE);
-        $this->db->where('YEAR(COALESCE(tgl_konversi_siswa, input_at)) =', $year, FALSE);
+        $this->db->where("MONTH(COALESCE(tgl_konversi_siswa, input_at)) = $month");
+        $this->db->where("YEAR(COALESCE(tgl_konversi_siswa, input_at)) = $year");
         
         return $this->db->count_all_results();
     }
@@ -57,10 +59,15 @@ class M_dashboard extends CI_Model
             $year = date('Y');
         }
 
+        $month = (int) $month;
+        $year = (int) $year;
+
         $this->db->from('peserta');
         $this->db->where('status', 'Jadwal Trial');   
-        $this->db->where('MONTH(input_at) =', $month, FALSE);
-        $this->db->where('YEAR(input_at) =', $year, FALSE);
+        
+        $this->db->where("MONTH(input_at) = $month");
+        $this->db->where("YEAR(input_at) = $year");
+        
         return $this->db->count_all_results();
     }
 
@@ -86,9 +93,12 @@ class M_dashboard extends CI_Model
             $year = date('Y');
         }
 
+        $month = (int) $month;
+        $year = (int) $year;
+
         $this->db->select_sum('jumlah');
-        $this->db->where('MONTH(tanggal) =', $month, FALSE);
-        $this->db->where('YEAR(tanggal) =', $year, FALSE);
+        $this->db->where("MONTH(tanggal) = $month");
+        $this->db->where("YEAR(tanggal) = $year");
         $query = $this->db->get('pengeluaran');
         return $query->row()->jumlah ?: 0;
     }

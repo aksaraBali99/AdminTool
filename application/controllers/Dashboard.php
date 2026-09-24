@@ -19,8 +19,8 @@ class Dashboard extends CI_Controller
     public function index()
     {
         $jabatan = $this->session->userdata('jabatan');
-        $bulan = isset($_GET['bulan']) ? $_GET['bulan'] : date('m');
-        $tahun = isset($_GET['tahun']) ? $_GET['tahun'] : date('Y');
+        $bulan = isset($_GET['bulan']) ? (int) $_GET['bulan'] : (int) date('m');
+        $tahun = isset($_GET['tahun']) ? (int) $_GET['tahun'] : (int) date('Y');
         
         // Common data for all dashboards
         $data = array();
