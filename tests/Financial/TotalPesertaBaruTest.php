@@ -45,11 +45,13 @@ final class TotalPesertaBaruTest extends TestCase
 
         $this->insertedIds[] = TestDb::insertPeserta([
             'nama_anak' => 'Converted just now',
+            'status' => 'Registrasi Kelas',
             'tgl_konversi_siswa' => date('Y-m-d H:i:s'),
         ]);
-        // Decoy: converted last month, must not be counted as "this month".
+        
         $this->insertedIds[] = TestDb::insertPeserta([
             'nama_anak' => 'Converted last month (decoy)',
+            'status' => 'Registrasi Kelas', // Definisi status wajib ditambahkan
             'tgl_konversi_siswa' => date('Y-m-d H:i:s', strtotime('-1 month')),
         ]);
 

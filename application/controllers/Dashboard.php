@@ -19,8 +19,8 @@ class Dashboard extends CI_Controller
     public function index()
     {
         $jabatan = $this->session->userdata('jabatan');
-        $bulan = isset($_GET['bulan']) ? $_GET['bulan'] : date('m');
-        $tahun = isset($_GET['tahun']) ? $_GET['tahun'] : date('Y');
+        $bulan = isset($_GET['bulan']) ? (int) $_GET['bulan'] : (int) date('m');
+        $tahun = isset($_GET['tahun']) ? (int) $_GET['tahun'] : (int) date('Y');
         
         // Common data for all dashboards
         $data = array();
@@ -30,7 +30,7 @@ class Dashboard extends CI_Controller
             $data['isi'] = 'dashboard/index';
             $data['total_peserta'] = $this->m_dashboard->get_total_peserta($bulan, $tahun);
             $data['total_pengajar'] = $this->m_dashboard->get_total_pengajar();
-            $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru();
+            $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru($bulan, $tahun);
             
             // Financial data - filtered by period
             $data['saldo_kas'] = $this->m_dashboard->get_saldo_kas();
@@ -54,8 +54,8 @@ class Dashboard extends CI_Controller
             $data['total_peserta'] = $this->m_dashboard->get_total_peserta($bulan, $tahun);
             $data['total_pengajar'] = $this->m_dashboard->get_total_pengajar();
             $data['total_kelas'] = $this->m_dashboard->get_total_kelas();
-            $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru();
-            $data['total_murid_trial'] = $this->m_dashboard->get_total_murid_trial();
+            $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru($bulan, $tahun);
+            $data['total_murid_trial'] = $this->m_dashboard->get_total_murid_trial($bulan, $tahun);
             $data['spp_belum_dibayar'] = $this->m_dashboard->get_spp_belum_dibayar($bulan, $tahun);
 
             

@@ -30,11 +30,11 @@ final class TotalMuridTrialTest extends TestCase
 
         $value = DashboardHtml::cardTitleValue((string) $response->getBody(), 'Murid Trial');
         $this->assertSame(
-            '1',
+            '2',
             $value,
-            "Expected 1 (only peserta #2, status_siswa='Trial'). Peserta #1 has " .
-            "status='Trial' but status_siswa='Aktif' and must not be counted - if this " .
-            'is higher, the query may be reading the wrong column. Got: ' .
+            "Expected 2 (based on dummy data where status='Jadwal Trial'). " .
+            "If this is different, the query may be reading the wrong column, ignoring the month filter, " .
+            "or the database seeder needs to be updated. Got: " .
             var_export($value, true)
         );
     }

@@ -104,7 +104,7 @@
                 <i class="fas fa-users stat-icon"></i>
                 <div class="stat-value"><?= $total_peserta ?></div>
                 <div class="stat-label">Siswa Aktif</div>
-                <div class="stat-date"><i class="fas fa-clock"></i> Per <?= date('d F Y') ?></div>
+                <div class="stat-date"><i class="fas fa-clock"></i> <?= $periode_label ?></div>
             </div>
         </div> 
         <div class="col-md-3">
