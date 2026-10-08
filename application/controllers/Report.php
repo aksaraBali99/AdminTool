@@ -331,15 +331,21 @@ class Report extends CI_Controller
     
     public function get_data_murid_trial()
     {
-        // Ambil data dari lead_status_history dimana status_baru = 'Jadwal Trial'
-        $list = $this->db->select('p.id_peserta, p.nama_anak, p.nama_ortu, p.no_hp, 
-                                   jk.nama_kelas, h.tgl_update as tgl_trial, p.status')
-                         ->from('lead_status_history h')
+        // Ambil data dari lead_status_history dimana status_baru = 'Jadwal Trial'.
+        // Satu record per peserta (tanggal trial terakhir) diambil lewat subquery
+        // agregat, supaya query tetap valid di sql_mode ONLY_FULL_GROUP_BY.
+        $trial = $this->db->select('id_peserta, MAX(tgl_update) as tgl_trial')
+                          ->from('lead_status_history')
+                          ->where('status_baru', 'Jadwal Trial')
+                          ->group_by('id_peserta')
+                          ->get_compiled_select();
+
+        $list = $this->db->select('p.id_peserta, p.nama_anak, p.nama_ortu, p.no_hp,
+                                   jk.nama_kelas, h.tgl_trial, p.status')
+                         ->from('(' . $trial . ') h')
                          ->join('peserta p', 'p.id_peserta = h.id_peserta')
                          ->join('data_jenis_kelas jk', 'jk.id_jenis_kelas = p.id_jenis_kelas', 'left')
-                         ->where('h.status_baru', 'Jadwal Trial')
-                         ->group_by('p.id_peserta') // Ambil satu record per peserta
-                         ->order_by('h.tgl_update', 'DESC')
+                         ->order_by('h.tgl_trial', 'DESC')
                          ->get()
                          ->result();
         
