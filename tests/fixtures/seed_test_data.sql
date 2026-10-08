@@ -112,20 +112,22 @@ INSERT INTO jadwal_kelas (id, id_kelas, id_guru, hari, jam_mulai, jam_selesai, i
 INSERT INTO peserta (id_peserta, nama_ortu, no_hp, nama_anak, status, catatan, jk, is_aktif, tgl_non_aktif, status_siswa) VALUES
 (1, 'Test Parent', '5550000099', 'Test Child', 'Trial', '', 'L', 1, '2000-01-01', 'Aktif');
 
--- Second peserta, status_siswa='Trial' (distinct from peserta #1's
--- status_siswa 'Aktif' - note `status` and `status_siswa` are different
--- columns; #1's `status`='Trial' is a CRM lead-stage value, unrelated to
--- this). Serves two Dashboard tests: M_dashboard::get_total_murid_trial()
--- needs at least one Trial row plus a non-Trial decoy (peserta #1 is that
--- decoy) to prove the filter discriminates; M_dashboard::get_pendapatan_per_kategori()
--- needs a peserta with `id_jenis_kelas` actually set, since it's an INNER
--- JOIN to data_jenis_kelas and peserta #1 has NULL there (left untouched,
--- so #1's tagihan stays excluded from that one query, matching today's
--- real behavior).
+-- Second peserta, `status`='Jadwal Trial' (distinct from peserta #1's
+-- `status`='Trial' - note `status` and `status_siswa` are different
+-- columns; #2's own status_siswa='Trial' is unrelated, left as-is).
+-- Serves two Dashboard tests: M_dashboard::get_total_murid_trial() needs
+-- at least one status='Jadwal Trial' row (this one, with input_at falling
+-- in the current month since it's inserted fresh at reseed time) plus a
+-- non-'Jadwal Trial' decoy (peserta #1, status='Trial') to prove the
+-- filter discriminates; M_dashboard::get_pendapatan_per_kategori() needs a
+-- peserta with `id_jenis_kelas` actually set, since it's an INNER JOIN to
+-- data_jenis_kelas and peserta #1 has NULL there (left untouched, so #1's
+-- tagihan stays excluded from that one query, matching today's real
+-- behavior).
 -- Also NOT status='Registrasi Kelas' + status_siswa='Aktif' - same Cron
 -- safety rule as #1 applies to every static fixture row.
 INSERT INTO peserta (id_peserta, nama_ortu, no_hp, nama_anak, status, catatan, jk, is_aktif, tgl_non_aktif, status_siswa, id_jenis_kelas) VALUES
-(2, 'Test Parent 2', '5550000098', 'Test Child 2', 'Trial', '', 'P', 1, '2000-01-01', 'Trial', 1);
+(2, 'Test Parent 2', '5550000098', 'Test Child 2', 'Jadwal Trial', '', 'P', 1, '2000-01-01', 'Trial', 1);
 
 INSERT INTO peserta_jadwal (id_jadwal_peserta, id_peserta, id_jadwal_pengajar, id_jadwal_kelas) VALUES
 (1, 1, 1, 1);

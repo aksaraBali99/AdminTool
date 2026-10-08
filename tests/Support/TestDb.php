@@ -161,7 +161,10 @@ class TestDb
     /** Mirrors M_dashboard::get_total_peserta_baru()'s own COUNT exactly - see sumPaidTagihan()'s docblock for why. */
     public static function countPesertaBaru(int $bulan, int $tahun): int
     {
-        $stmt = self::connect()->prepare('SELECT COUNT(*) FROM peserta WHERE MONTH(tgl_konversi_siswa) = ? AND YEAR(tgl_konversi_siswa) = ?');
+        $stmt = self::connect()->prepare(
+            "SELECT COUNT(*) FROM peserta WHERE status = 'Registrasi Kelas' " .
+            'AND MONTH(COALESCE(tgl_konversi_siswa, input_at)) = ? AND YEAR(COALESCE(tgl_konversi_siswa, input_at)) = ?'
+        );
         $stmt->execute([$bulan, $tahun]);
         return (int) $stmt->fetchColumn();
     }
