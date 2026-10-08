@@ -340,10 +340,17 @@ class Report extends CI_Controller
                           ->group_by('id_peserta')
                           ->get_compiled_select();
 
+        // The derived table is joined in rather than passed to from(): CI3's
+        // from() blindly explodes any string containing a comma on ',' (to
+        // support from('table1, table2')), which corrupts this subquery's
+        // own SELECT list ('id_peserta, MAX(tgl_update) ...') into two bogus
+        // FROM entries - MySQL's driver then wraps them in an extra pair of
+        // parens for the JOIN, producing invalid SQL. join()'s $table
+        // argument isn't parsed that way, so it's safe for a raw subquery.
         $list = $this->db->select('p.id_peserta, p.nama_anak, p.nama_ortu, p.no_hp,
                                    jk.nama_kelas, h.tgl_trial, p.status')
-                         ->from('(' . $trial . ') h')
-                         ->join('peserta p', 'p.id_peserta = h.id_peserta')
+                         ->from('peserta p')
+                         ->join("($trial) h", 'h.id_peserta = p.id_peserta')
                          ->join('data_jenis_kelas jk', 'jk.id_jenis_kelas = p.id_jenis_kelas', 'left')
                          ->order_by('h.tgl_trial', 'DESC')
                          ->get()
