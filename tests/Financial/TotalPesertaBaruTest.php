@@ -88,7 +88,7 @@ final class TotalPesertaBaruTest extends TestCase
             'tgl_konversi_siswa' => '2026-06-15 00:00:00',
         ]);
         $this->insertedIds[] = TestDb::insertPeserta([
-            'nama_anak' => 'Row B (enrolled directly in-month, via input_at fallback)',
+            'nama_anak' => 'Row B (input_at fallback, in-month)',
             'status' => 'Registrasi Kelas',
             'tgl_konversi_siswa' => null,
             'input_at' => '2026-06-20 00:00:00',
@@ -99,7 +99,7 @@ final class TotalPesertaBaruTest extends TestCase
             'tgl_konversi_siswa' => '2026-05-15 00:00:00',
         ]);
         $this->insertedIds[] = TestDb::insertPeserta([
-            'nama_anak' => 'Row D (right month, but not Registrasi Kelas - excluded)',
+            'nama_anak' => 'Row D (Jadwal Trial, not Registrasi)',
             'status' => 'Jadwal Trial',
             'tgl_konversi_siswa' => '2026-06-10 00:00:00',
         ]);
