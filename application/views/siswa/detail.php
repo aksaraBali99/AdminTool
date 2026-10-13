@@ -304,18 +304,20 @@
                 </div>
                 <div id="rekap-absensi" class="mb-3"></div>
                 <table class="table table-sm table-bordered" id="table-absensi">
-                    <thead>
-                        <tr>
-                            <th>Tanggal</th>
-                            <th>Status</th>
-                            <th>Keterangan</th>
-                            <th>Aksi</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tbody-absensi">
-                        <tr><td colspan="3" class="text-center">Loading...</td></tr>
-                    </tbody>
-                </table>
+                <thead>
+                    <tr>
+                        <th>Tanggal</th>
+                        <th>Guru Pengajar</th>
+                        <th>Sesi</th>
+                        <th>Status</th>
+                        <th>Keterangan</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody-absensi">
+                    <tr><td colspan="6" class="text-center">Loading...</td></tr>
+                </tbody>
+            </table>
             </div>
         </div>
     </div>
@@ -556,10 +558,29 @@
                         <input type="date" name="tanggal" class="form-control" value="<?= date('Y-m-d') ?>" required>
                     </div>
                     <div class="form-group">
-                        <label>Status Kehadiran</label>
+                        <label>Guru Pengajar <span class="text-danger">*</span></label>
+                        <select name="id_guru" class="form-control" required>
+                            <option value="">-- Pilih Guru --</option>
+                            <?php foreach($pengajar as $p): ?>
+                                <option value="<?= $p->id_pengajar ?>"><?= $p->nama ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Jumlah Sesi / Durasi <span class="text-danger">*</span></label>
+                        <select name="jumlah_sesi" class="form-control" required>
+                            <option value="1">1 Sesi</option>
+                            <option value="2">2 Sesi (2 Jam)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Status Kehadiran <span class="text-danger">*</span></label>
                         <select name="status_hadir" class="form-control" required>
                             <option value="Hadir">Hadir</option>
                             <option value="Izin">Izin</option>
+                            <option value="Sakit">Sakit</option>
                             <option value="Alpha">Alpha</option>
                         </select>
                     </div>
@@ -691,13 +712,25 @@ $(document).ready(function() {
             var data = JSON.parse(res);
             var html = '';
             
-            if (data.absensi.length === 0) {
+            if (!data.absensi || data.absensi.length === 0) {
                 html = '<tr><td colspan="3" class="text-center">Tidak ada data absensi</td></tr>';
             } else {
                 data.absensi.forEach(function(a) {
-                    var badge = a.status_hadir === 'Hadir' ? 'success' : (a.status_hadir === 'Izin' ? 'warning' : 'danger');
+                    var badge = 'secondary';
+                    if (a.status_hadir === 'Hadir'){
+                        badge = 'success';
+                    } else if (a.status_hadir === 'Izin'){
+                        badge = 'warning';
+                    } else if (a.status_hadir === 'Sakit'){
+                        badge = 'info';
+                    } else if (a.status_hadir === 'Alpha'){
+                        badge = 'danger';
+                    } 
+
                     html += '<tr>';
                     html += '<td>' + formatDate(a.tanggal) + '</td>';
+                    html += '<td>' + (a.nama_guru || '-') + '</td>';
+                    html += '<td><span class="badge badge-primary">' + (a.jumlah_sesi || 1) + ' Sesi</span></td>';
                     html += '<td><span class="badge badge-' + badge + '">' + a.status_hadir + '</span></td>';
                     html += '<td>' + (a.keterangan || '-') + '</td>';
                     html += '<td><button class="btn btn-danger btn-xs btn-hapus-absensi" data-id="' + a.id + '" title="Hapus"><i class="fa fa-trash"></i></button></td>';
@@ -709,11 +742,12 @@ $(document).ready(function() {
             
             // Rekap
             var rekap = data.rekap;
-            var rekapHtml = '<div class="row">';
-            rekapHtml += '<div class="col-md-3"><div class="alert alert-success"><strong>' + (rekap.total_hadir || 0) + '</strong> Hadir</div></div>';
-            rekapHtml += '<div class="col-md-3"><div class="alert alert-warning"><strong>' + (rekap.total_izin || 0) + '</strong> Izin</div></div>';
-            rekapHtml += '<div class="col-md-3"><div class="alert alert-danger"><strong>' + (rekap.total_alpha || 0) + '</strong> Alpha</div></div>';
-            rekapHtml += '<div class="col-md-3"><div class="alert alert-info"><strong>' + (rekap.total_hari || 0) + '</strong> Total Hari</div></div>';
+            var rekapHtml = '<div class="row justify-content-center">';
+            rekapHtml += '<div class="col-md-2"><div class="alert alert-success"><strong>' + (rekap.total_hadir || 0) + '</strong> Hadir</div></div>';
+            rekapHtml += '<div class="col-md-2"><div class="alert alert-warning"><strong>' + (rekap.total_izin || 0) + '</strong> Izin</div></div>';
+            rekapHtml += '<div class="col-md-2"><div class="alert alert-secondary"><strong>' + (rekap.total_sakit || 0) + '</strong> Sakit</div></div>';
+            rekapHtml += '<div class="col-md-2"><div class="alert alert-danger"><strong>' + (rekap.total_alpha || 0) + '</strong> Alpha</div></div>';
+            rekapHtml += '<div class="col-md-2"><div class="alert alert-info"><strong>' + (rekap.total_hari || 0) + '</strong> Total Hari</div></div>';
             rekapHtml += '</div>';
             $('#rekap-absensi').html(rekapHtml);
         });
