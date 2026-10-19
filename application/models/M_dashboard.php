@@ -71,6 +71,25 @@ class M_dashboard extends CI_Model
         return $this->db->count_all_results();
     }
 
+    public function get_total_murid_placement_test($month = null, $year = null)
+    {
+        if ($month == null || $year == null) {
+            $month = date('m');
+            $year = date('Y');
+        }
+
+        $month = (int) $month;
+        $year = (int) $year;
+
+        $this->db->from('peserta');
+        $this->db->where('status', 'Placement Test');   
+        
+        $this->db->where("MONTH(input_at) = $month");
+        $this->db->where("YEAR(input_at) = $year");
+        
+        return $this->db->count_all_results();
+    }
+
     public function get_total_pembayaran($month = null, $year = null)
     {
         if ($month == null || $year == null) {

@@ -56,6 +56,7 @@ class Dashboard extends CI_Controller
             $data['total_kelas'] = $this->m_dashboard->get_total_kelas();
             $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru($bulan, $tahun);
             $data['total_murid_trial'] = $this->m_dashboard->get_total_murid_trial($bulan, $tahun);
+            $data['total_murid_placement_test'] = $this->m_dashboard->get_total_murid_placement_test($bulan, $tahun);
             $data['spp_belum_dibayar'] = $this->m_dashboard->get_spp_belum_dibayar($bulan, $tahun);
 
             
