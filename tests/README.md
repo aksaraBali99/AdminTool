@@ -31,6 +31,15 @@ so this suite tests observable behavior instead.
 
 ## Running
 
+One-time setup: create an empty `admintool_test` database and build its
+tables by running the app's migrations against it (the same thing CI does):
+
+```
+DB_HOST=127.0.0.1 DB_USER=root DB_PASS=<your password> DB_NAME=admintool_test CI_ENV=testing php index.php migrate
+```
+
+Re-run that whenever a PR adds a migration. Then:
+
 ```
 composer test              # everything
 composer test:security     # just tests/Security
