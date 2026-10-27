@@ -150,18 +150,21 @@ class M_siswa extends CI_Model
     
     public function get_absensi($id_siswa, $date_from = null, $date_to = null)
     {
-        $this->db->where('id_siswa', $id_siswa);
+        $this->db->select('a.*, p.nama as nama_guru');
+        $this->db->from('absensi_siswa a');
+        $this->db->join('pengajar p', 'p.id_pengajar = a.id_guru', 'left');
+        $this->db->where('a.id_siswa', $id_siswa);
         
         if ($date_from) {
-            $this->db->where('tanggal >=', $date_from);
+            $this->db->where('a.tanggal >=', $date_from);
         }
         if ($date_to) {
-            $this->db->where('tanggal <=', $date_to);
+            $this->db->where('a.tanggal <=', $date_to);
         }
         
-        return $this->db->order_by('tanggal', 'DESC')
-                        ->get('absensi_siswa')
-                        ->result();
+        $this->db->order_by('a.tanggal', 'DESC');
+
+        return $this->db->get()->result(); 
     }
     
     public function get_absensi_by_id($id)
@@ -193,9 +196,10 @@ class M_siswa extends CI_Model
     public function get_rekap_absensi($id_siswa, $date_from, $date_to)
     {
         $this->db->select("
-            COUNT(CASE WHEN status_hadir = 'Hadir' THEN 1 END) as total_hadir,
-            COUNT(CASE WHEN status_hadir = 'Izin' THEN 1 END) as total_izin,
-            COUNT(CASE WHEN status_hadir = 'Alpha' THEN 1 END) as total_alpha,
+            COALESCE(SUM(CASE WHEN status_hadir = 'Hadir' THEN jumlah_sesi ELSE 0 END), 0) as total_hadir,
+            COALESCE(SUM(CASE WHEN status_hadir = 'Izin' THEN 1 ELSE 0 END), 0) as total_izin,
+            COALESCE(SUM(CASE WHEN status_hadir = 'Sakit' THEN 1 ELSE 0 END), 0) as total_sakit,
+            COALESCE(SUM(CASE WHEN status_hadir = 'Alpha' THEN 1 ELSE 0 END), 0) as total_alpha,
             COUNT(*) as total_hari
         ");
         $this->db->where('id_siswa', $id_siswa);
@@ -208,6 +212,22 @@ class M_siswa extends CI_Model
         }
         
         return $this->db->get('absensi_siswa')->row();
+    }
+
+    public function count_monthly_sessions($id_siswa, $bulan, $tahun) 
+    {
+        $id_siswa = (int) $id_siswa;
+        $bulan    = (int) $bulan;
+        $tahun    = (int) $tahun;
+
+        $this->db->select("COALESCE(SUM(jumlah_sesi), 0) as total_sesi");
+        $this->db->where('id_siswa', $id_siswa);
+        $this->db->where('status_hadir', 'Hadir'); 
+        $this->db->where('MONTH(tanggal)', $bulan);
+        $this->db->where('YEAR(tanggal)', $tahun);
+        
+        $result = $this->db->get('absensi_siswa')->row();
+        return $result ? (int) $result->total_sesi : 0;
     }
     
     // =============================================
