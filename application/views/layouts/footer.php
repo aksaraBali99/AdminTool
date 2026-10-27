@@ -13,6 +13,8 @@
         </nav>
         <div class="copyright ml-auto">
             Dikembangkan oleh <a href="https://www.digitalind.id">Digitalint.id</a> on 2025
+            <?php $app_version = @file_get_contents(FCPATH . 'VERSION'); ?>
+            <?php if ($app_version !== FALSE): ?>&middot; v<?= html_escape(trim($app_version)) ?><?php endif; ?>
         </div>
     </div>
 </footer>
