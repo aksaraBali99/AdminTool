@@ -442,11 +442,8 @@ class Siswa extends CI_Controller
         $id_siswa = $this->input->post('id_siswa');
         $tanggal = $this->input->post('tanggal');
         
-        // Check if already exists
-        if ($this->m_siswa->check_absensi_exists($id_siswa, $tanggal)) {
-            echo json_encode(['status' => 'error', 'message' => 'Absensi untuk tanggal ini sudah ada']);
-            return;
-        }
+        // More than one attendance per date is allowed on purpose (matches
+        // PROD), so there is no check_absensi_exists() guard here.
         
         $data = array(
             'id_siswa' => $id_siswa,
