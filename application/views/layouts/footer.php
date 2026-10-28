@@ -12,12 +12,20 @@
             </ul>
         </nav>
         <div class="copyright ml-auto">
-            Dikembangkan oleh <a href="https://www.digitalind.id">Digitalint.id</a> on 2025
             <?php $app_version = @file_get_contents(FCPATH . 'VERSION'); ?>
-            <?php if ($app_version !== FALSE): ?>&middot; v<?= html_escape(trim($app_version)) ?><?php endif; ?>
+            <?php if ($app_version !== FALSE): ?>v<?= html_escape(trim($app_version)) ?><?php endif; ?>
         </div>
     </div>
 </footer>
+<script>
+    // Some views close one <div> too many, which pushes the footer out of
+    // .main-panel so it floats over the page; put it back.
+    (function () {
+        var footer = document.querySelector('footer.footer');
+        var panel = document.querySelector('.main-panel');
+        if (footer && panel && footer.parentElement !== panel) panel.appendChild(footer);
+    })();
+</script>
 <div class="custom-toggle">
     <i class="flaticon-settings"></i>
 </div>
