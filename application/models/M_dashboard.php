@@ -1,6 +1,10 @@
 <?php
 class M_dashboard extends CI_Model
 {
+    const STATUS_REGISTRASI     = 'Registrasi Kelas';
+    const STATUS_JADWAL_TRIAL   = 'Jadwal Trial';
+    const STATUS_PLACEMENT_TEST = 'Placement Test';
+
     public function get_total_peserta($month = null, $year = null)
     {
         if ($month == null || $year == null) {
@@ -51,43 +55,45 @@ class M_dashboard extends CI_Model
     {
         return $this->db->count_all('data_jenis_kelas');
     }
-    
-    public function get_total_murid_trial($month = null, $year = null)
+
+    // Private helper method
+    public function get_lead_status_counts($month = null, $year = null)
     {
         if ($month == null || $year == null) {
-            $month = date('m');
-            $year = date('Y');
+            $month = (int) date('m');
+            $year  = (int) date('Y');
         }
 
         $month = (int) $month;
-        $year = (int) $year;
+        $year  = (int) $year;
 
+        $start_date = sprintf('%04d-%02d-01 00:00:00', $year, $month);
+        $end_date   = date('Y-m-d H:i:s', strtotime("$start_date +1 month"));
+
+        $this->db->select("
+            SUM(CASE WHEN status = '" . self::STATUS_JADWAL_TRIAL . "' THEN 1 ELSE 0 END) as total_trial,
+            SUM(CASE WHEN status = '" . self::STATUS_PLACEMENT_TEST . "' THEN 1 ELSE 0 END) as total_placement_test
+        ");
         $this->db->from('peserta');
-        $this->db->where('status', 'Jadwal Trial');   
+        $this->db->where('input_at >=', $start_date);
+        $this->db->where('input_at <', $end_date);
         
-        $this->db->where("MONTH(input_at) = $month");
-        $this->db->where("YEAR(input_at) = $year");
+        $row = $this->db->get()->row();
         
-        return $this->db->count_all_results();
+        return [
+            'total_trial'          => $row ? (int) $row->total_trial : 0,
+            'total_placement_test' => $row ? (int) $row->total_placement_test : 0
+        ];
+    }
+
+    public function get_total_murid_trial($month = null, $year = null)
+    {
+        return $this->get_total_peserta_by_status(self::STATUS_JADWAL_TRIAL, $month, $year);
     }
 
     public function get_total_murid_placement_test($month = null, $year = null)
     {
-        if ($month == null || $year == null) {
-            $month = date('m');
-            $year = date('Y');
-        }
-
-        $month = (int) $month;
-        $year = (int) $year;
-
-        $this->db->from('peserta');
-        $this->db->where('status', 'Placement Test');   
-        
-        $this->db->where("MONTH(input_at) = $month");
-        $this->db->where("YEAR(input_at) = $year");
-        
-        return $this->db->count_all_results();
+        return $this->get_total_peserta_by_status(self::STATUS_PLACEMENT_TEST, $month, $year);
     }
 
     public function get_total_pembayaran($month = null, $year = null)
