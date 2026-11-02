@@ -7,11 +7,12 @@ use Tests\Support\ApiClient;
 use Tests\Support\DashboardHtml;
 
 /**
- * Regression coverage for M_dashboard::get_total_murid_trial() (application/
- * models/M_dashboard.php:55), the "Murid Trial" stat on the admin
- * dashboard: COUNT(*) FROM peserta WHERE status='Jadwal Trial' AND
- * MONTH/YEAR(input_at) match the given period (defaulting to the current
- * real-world month/year when no bulan/tahun is passed, as here).
+ * Regression coverage for the "Murid Trial" stat on the admin dashboard,
+ * the total_trial half of M_dashboard::get_lead_status_counts(): rows of
+ * peserta with status='Jadwal Trial' whose input_at falls in the given
+ * month (defaulting to the current real-world month/year when no
+ * bulan/tahun is passed, as here). The "Murid Placement Test" half is
+ * covered by TotalMuridPlacementTestTest.
  *
  * Note `status` and `status_siswa` are different columns: fixture peserta
  * #1 has `status`='Trial' (a CRM lead-stage value, not 'Jadwal Trial'), so
