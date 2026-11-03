@@ -75,13 +75,16 @@ class M_dashboard extends CI_Model
 
         // Array form so select() doesn't split the expressions on commas
         $this->db->select([
-            "SUM(CASE WHEN status = $trial THEN 1 ELSE 0 END) AS total_trial",
-            "SUM(CASE WHEN status = $placement THEN 1 ELSE 0 END) AS total_placement_test",
+            "COUNT(DISTINCT CASE WHEN h.status_baru = $trial THEN h.id_peserta END) AS total_trial",
+            "COUNT(DISTINCT CASE WHEN h.status_baru = $placement THEN h.id_peserta END) AS total_placement_test"
         ], FALSE);
 
-        $this->db->from('peserta');
-        $this->db->where('input_at >=', $start_date);
-        $this->db->where('input_at <', $end_date);
+        $this->db->from('lead_status_history h');
+        $this->db->join('peserta p', 'p.id_peserta = h.id_peserta');
+        
+        $this->db->where_in('h.status_baru', [self::STATUS_JADWAL_TRIAL, self::STATUS_PLACEMENT_TEST]);
+        $this->db->where('h.tgl_update >=', $start_date);
+        $this->db->where('h.tgl_update <', $end_date);
         
         $row = $this->db->get()->row();
         
