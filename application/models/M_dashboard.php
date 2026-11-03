@@ -62,7 +62,7 @@ class M_dashboard extends CI_Model
         $month = (int) $month;
         $year  = (int) $year;
 
-        if ($month < 1 || $month > 12 || $year < 1970 || $year > 9999) {
+        if ($month < 1 || $month > 12 || $year < 2000 || $year > 2100) {
             $month = (int) date('m');
             $year  = (int) date('Y');
         }

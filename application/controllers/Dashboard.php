@@ -25,7 +25,7 @@ class Dashboard extends CI_Controller
         }
         
         $tahun = isset($_GET['tahun']) ? (int) $_GET['tahun'] : (int) date('Y');
-        if ($tahun < 1970 || $tahun > 9999) {
+        if ($tahun < 2000 || $tahun > 2100) {
             $tahun = (int) date('Y');
         }
         

@@ -103,4 +103,19 @@ final class TotalMuridPlacementTestTest extends TestCase
             var_export($invalid, true)
         );
     }
+
+    public function test_december_of_the_last_four_digit_year_does_not_error(): void
+    {
+        // December 9999 passes a "4-digit year" check, but its month end is
+        // 10000-01-01, which MySQL also rejects as an invalid DATETIME.
+        $client = new ApiClient();
+        $client->loginAs('admin');
+
+        $response = $client->get('Dashboard', ['bulan' => '12', 'tahun' => '9999']);
+        $this->assertSame(200, $response->getStatusCode(), '?bulan=12&tahun=9999 must not make the dashboard error out.');
+        $this->assertNotNull(
+            DashboardHtml::cardTitleValue((string) $response->getBody(), 'Murid Placement Test'),
+            'The Murid Placement Test card should still render.'
+        );
+    }
 }
