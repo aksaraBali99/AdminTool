@@ -14,7 +14,7 @@ class M_dashboard extends CI_Model
 
         $this->db->from('peserta');
         $this->db->where('status_siswa', 'Aktif'); 
-        $this->db->where('status', 'Registrasi Kelas'); 
+        $this->db->where('status', self::STATUS_REGISTRASI); 
         
         $where_clause = "(
             YEAR(COALESCE(tgl_konversi_siswa, input_at)) < $year 
@@ -39,7 +39,7 @@ class M_dashboard extends CI_Model
         $year = (int) $year;
 
         $this->db->from('peserta');
-        $this->db->where('status', 'Registrasi Kelas'); 
+        $this->db->where('status', self::STATUS_REGISTRASI); 
 
         $this->db->where("MONTH(COALESCE(tgl_konversi_siswa, input_at)) = $month");
         $this->db->where("YEAR(COALESCE(tgl_konversi_siswa, input_at)) = $year");
@@ -56,24 +56,29 @@ class M_dashboard extends CI_Model
         return $this->db->count_all('data_jenis_kelas');
     }
 
-    // Private helper method
+    // Jadwal Trial / Placement Test lead counts for the month, by input_at
     public function get_lead_status_counts($month = null, $year = null)
     {
-        if ($month == null || $year == null) {
+        $month = (int) $month;
+        $year  = (int) $year;
+
+        if ($month < 1 || $month > 12 || $year < 1970 || $year > 9999) {
             $month = (int) date('m');
             $year  = (int) date('Y');
         }
 
-        $month = (int) $month;
-        $year  = (int) $year;
-
         $start_date = sprintf('%04d-%02d-01 00:00:00', $year, $month);
         $end_date   = date('Y-m-d H:i:s', strtotime("$start_date +1 month"));
 
-        $this->db->select("
-            SUM(CASE WHEN status = '" . self::STATUS_JADWAL_TRIAL . "' THEN 1 ELSE 0 END) as total_trial,
-            SUM(CASE WHEN status = '" . self::STATUS_PLACEMENT_TEST . "' THEN 1 ELSE 0 END) as total_placement_test
-        ");
+        $trial     = $this->db->escape(self::STATUS_JADWAL_TRIAL);
+        $placement = $this->db->escape(self::STATUS_PLACEMENT_TEST);
+
+        // Array form so select() doesn't split the expressions on commas
+        $this->db->select([
+            "SUM(CASE WHEN status = $trial THEN 1 ELSE 0 END) AS total_trial",
+            "SUM(CASE WHEN status = $placement THEN 1 ELSE 0 END) AS total_placement_test",
+        ], FALSE);
+
         $this->db->from('peserta');
         $this->db->where('input_at >=', $start_date);
         $this->db->where('input_at <', $end_date);
@@ -84,16 +89,6 @@ class M_dashboard extends CI_Model
             'total_trial'          => $row ? (int) $row->total_trial : 0,
             'total_placement_test' => $row ? (int) $row->total_placement_test : 0
         ];
-    }
-
-    public function get_total_murid_trial($month = null, $year = null)
-    {
-        return $this->get_total_peserta_by_status(self::STATUS_JADWAL_TRIAL, $month, $year);
-    }
-
-    public function get_total_murid_placement_test($month = null, $year = null)
-    {
-        return $this->get_total_peserta_by_status(self::STATUS_PLACEMENT_TEST, $month, $year);
     }
 
     public function get_total_pembayaran($month = null, $year = null)

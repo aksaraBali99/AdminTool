@@ -81,12 +81,6 @@ final class TotalMuridPlacementTestTest extends TestCase
 
     public function test_out_of_range_year_falls_back_to_the_current_month(): void
     {
-        // TODO: remove this skip once Dashboard::index() validates tahun and
-        // get_lead_status_counts() validates its own month/year (PR #11 review).
-        // Until then ?tahun=99999 builds '99999-MM-01' and MySQL rejects it
-        // (error 1525, Incorrect DATETIME value), so the whole dashboard 500s.
-        $this->markTestSkipped('Known finding, not yet fixed: an out-of-range ?tahun= makes get_lead_status_counts() send an invalid DATETIME and the admin dashboard returns 500. Re-enable once Dashboard::index() and get_lead_status_counts() validate bulan/tahun.');
-
         $this->insertedIds[] = TestDb::insertPeserta([
             'nama_anak' => 'PT entered now',
             'status' => 'Placement Test',

@@ -23,7 +23,11 @@ class Dashboard extends CI_Controller
         if ($bulan < 1 || $bulan > 12) {
             $bulan = (int) date('m');
         }
+        
         $tahun = isset($_GET['tahun']) ? (int) $_GET['tahun'] : (int) date('Y');
+        if ($tahun < 1970 || $tahun > 9999) {
+            $tahun = (int) date('Y');
+        }
         
         // Common data for all dashboards
         $data = array();
@@ -93,6 +97,9 @@ class Dashboard extends CI_Controller
             $data['total_pembayaran_lalu'] = $pembayaran['total_bulan_lalu'];
             $data['persentase_pembayaran'] = $pembayaran['persentase'];
         }
+        
+        $data['bulan_aktif'] = $bulan;
+        $data['tahun_aktif'] = $tahun;
 
         $this->load->view('layouts/wrapper', $data);
     }
