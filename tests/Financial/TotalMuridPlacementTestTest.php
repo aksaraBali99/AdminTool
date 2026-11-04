@@ -10,14 +10,8 @@ use Tests\Support\TestDb;
 /**
  * Regression coverage for the "Murid Placement Test" stat on the admin
  * dashboard, the total_placement_test half of
- * M_dashboard::get_lead_status_counts(): rows of peserta with
- * status='Placement Test' whose input_at falls in the given month.
- *
- * Uses the fixed June 2026 period via ?bulan=&tahun= like
- * TotalPesertaBaruTest, so the static fixture rows (input_at = reseed
- * time) never fall inside it. Decoys prove the query filters on both the
- * status value and the month range, including its exclusive upper bound
- * (a row at exactly 2026-07-01 00:00:00 must not count).
+ * M_dashboard::get_lead_status_counts(): rows of lead_status_history
+ * with status_baru='Placement Test' whose tgl_update falls in the given month.
  */
 final class TotalMuridPlacementTestTest extends TestCase
 {
@@ -26,33 +20,29 @@ final class TotalMuridPlacementTestTest extends TestCase
     protected function tearDown(): void
     {
         foreach ($this->insertedIds as $id) {
+            TestDb::deleteLeadHistoryByPesertaId($id);
             TestDb::deletePesertaById($id);
         }
         $this->insertedIds = [];
     }
 
-    public function test_counts_only_placement_test_leads_entered_in_the_given_month(): void
+    public function test_counts_only_placement_test_leads_updated_in_the_given_month(): void
     {
-        $this->insertedIds[] = TestDb::insertPeserta([
-            'nama_anak' => 'PT in June (first day)',
-            'status' => 'Placement Test',
-            'input_at' => '2026-06-01 00:00:00',
-        ]);
-        $this->insertedIds[] = TestDb::insertPeserta([
-            'nama_anak' => 'PT in June (last second)',
-            'status' => 'Placement Test',
-            'input_at' => '2026-06-30 23:59:59',
-        ]);
-        $this->insertedIds[] = TestDb::insertPeserta([
-            'nama_anak' => 'PT in July (decoy)',
-            'status' => 'Placement Test',
-            'input_at' => '2026-07-01 00:00:00',
-        ]);
-        $this->insertedIds[] = TestDb::insertPeserta([
-            'nama_anak' => 'Trial in June (decoy)',
-            'status' => 'Jadwal Trial',
-            'input_at' => '2026-06-15 00:00:00',
-        ]);
+        $id1 = TestDb::insertPeserta(['nama_anak' => 'PT in June (first day)']);
+        $this->insertedIds[] = $id1;
+        TestDb::insertLeadHistory($id1, 'Placement Test', '2026-06-01 00:00:00');
+
+        $id2 = TestDb::insertPeserta(['nama_anak' => 'PT in June (last second)']);
+        $this->insertedIds[] = $id2;
+        TestDb::insertLeadHistory($id2, 'Placement Test', '2026-06-30 23:59:59');
+
+        $id3 = TestDb::insertPeserta(['nama_anak' => 'PT in July (decoy)']);
+        $this->insertedIds[] = $id3;
+        TestDb::insertLeadHistory($id3, 'Placement Test', '2026-07-01 00:00:00');
+
+        $id4 = TestDb::insertPeserta(['nama_anak' => 'Trial in June (decoy)']);
+        $this->insertedIds[] = $id4;
+        TestDb::insertLeadHistory($id4, 'Jadwal Trial', '2026-06-15 00:00:00');
 
         $client = new ApiClient();
         $client->loginAs('admin');
@@ -65,7 +55,7 @@ final class TotalMuridPlacementTestTest extends TestCase
         $this->assertSame(
             '2',
             $value,
-            "Expected 2 status='Placement Test' leads entered in June 2026. The July row is " .
+            "Expected 2 status_baru='Placement Test' leads updated in June 2026. The July row is " .
             "outside the month and the 'Jadwal Trial' row is a different status. Got: " .
             var_export($value, true)
         );
@@ -81,16 +71,15 @@ final class TotalMuridPlacementTestTest extends TestCase
 
     public function test_out_of_range_year_falls_back_to_the_current_month(): void
     {
-        $this->insertedIds[] = TestDb::insertPeserta([
-            'nama_anak' => 'PT entered now',
-            'status' => 'Placement Test',
-        ]);
+        $id = TestDb::insertPeserta(['nama_anak' => 'PT entered now']);
+        $this->insertedIds[] = $id;
+        TestDb::insertLeadHistory($id, 'Placement Test', date('Y-m-d H:i:s'));
 
         $client = new ApiClient();
         $client->loginAs('admin');
 
         $current = DashboardHtml::cardTitleValue((string) $client->get('Dashboard')->getBody(), 'Murid Placement Test');
-        $this->assertNotSame('0', $current, 'Precondition: the row entered now should count this month.');
+        $this->assertNotSame('0', $current, 'Precondition: the row updated now should count this month.');
 
         $response = $client->get('Dashboard', ['bulan' => date('n'), 'tahun' => '99999']);
         $this->assertSame(200, $response->getStatusCode(), 'An out-of-range tahun must not make the dashboard error out.');
@@ -106,8 +95,6 @@ final class TotalMuridPlacementTestTest extends TestCase
 
     public function test_december_of_the_last_four_digit_year_does_not_error(): void
     {
-        // December 9999 passes a "4-digit year" check, but its month end is
-        // 10000-01-01, which MySQL also rejects as an invalid DATETIME.
         $client = new ApiClient();
         $client->loginAs('admin');
 

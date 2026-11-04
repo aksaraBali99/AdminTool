@@ -168,4 +168,17 @@ class TestDb
         $stmt->execute([$bulan, $tahun]);
         return (int) $stmt->fetchColumn();
     }
+
+    /** Inserts a mock history record into lead_status_history */
+    public static function insertLeadHistory(int $idPeserta, string $statusBaru, string $tglUpdate): void
+    {
+        $sql = 'INSERT INTO lead_status_history (id_peserta, status_baru, tgl_update) VALUES (?, ?, ?)';
+        self::connect()->prepare($sql)->execute([$idPeserta, $statusBaru, $tglUpdate]);
+    }
+
+    /** Deletes records from lead_status_history for test cleanup */
+    public static function deleteLeadHistoryByPesertaId(int $idPeserta): void
+    {
+        self::connect()->prepare('DELETE FROM lead_status_history WHERE id_peserta = ?')->execute([$idPeserta]);
+    }
 }
