@@ -28,6 +28,9 @@ final class TotalMuridPlacementTestTest extends TestCase
 
     public function test_counts_only_placement_test_leads_updated_in_the_given_month(): void
     {
+        $ptBefore = TestDb::countLeadStatus('Placement Test', 6, 2026);
+        $trialBefore = TestDb::countLeadStatus('Jadwal Trial', 6, 2026);
+
         $id1 = TestDb::insertPeserta(['nama_anak' => 'PT in June (first day)']);
         $this->insertedIds[] = $id1;
         TestDb::insertLeadHistory($id1, 'Placement Test', '2026-06-01 00:00:00');
@@ -53,42 +56,52 @@ final class TotalMuridPlacementTestTest extends TestCase
 
         $value = DashboardHtml::cardTitleValue($html, 'Murid Placement Test');
         $this->assertSame(
-            '2',
+            (string) ($ptBefore + 2),
             $value,
-            "Expected 2 status_baru='Placement Test' leads updated in June 2026. The July row is " .
+            "Expected 2 more than the $ptBefore pre-existing status_baru='Placement Test' leads updated in June 2026. The July row is " .
             "outside the month and the 'Jadwal Trial' row is a different status. Got: " .
             var_export($value, true)
         );
 
         $trial = DashboardHtml::cardTitleValue($html, 'Murid Trial');
         $this->assertSame(
-            '1',
+            (string) ($trialBefore + 1),
             $trial,
-            "Expected the same query's Trial count to be 1 (only the 'Jadwal Trial' decoy). Got: " .
+            "Expected the same query's Trial count to grow by 1 (only the 'Jadwal Trial' decoy). Got: " .
             var_export($trial, true)
         );
     }
 
-    public function test_out_of_range_year_falls_back_to_the_current_month(): void
+    public function test_out_of_range_year_falls_back_to_the_current_year(): void
     {
-        $id = TestDb::insertPeserta(['nama_anak' => 'PT entered now']);
+        // The controller keeps a valid bulan and replaces only the bad tahun
+        // with the server's current year, so ?bulan=n&tahun=99999 must match
+        // ?bulan=n&tahun=<this year>. The row is dated mid-month so neither a
+        // month boundary nor a CLI/server clock difference can move it.
+        $bulan = (int) date('n');
+        $tahun = (int) date('Y');
+
+        $id = TestDb::insertPeserta(['nama_anak' => 'PT mid-month']);
         $this->insertedIds[] = $id;
-        TestDb::insertLeadHistory($id, 'Placement Test', date('Y-m-d H:i:s'));
+        TestDb::insertLeadHistory($id, 'Placement Test', sprintf('%04d-%02d-15 12:00:00', $tahun, $bulan));
 
         $client = new ApiClient();
         $client->loginAs('admin');
 
-        $current = DashboardHtml::cardTitleValue((string) $client->get('Dashboard')->getBody(), 'Murid Placement Test');
-        $this->assertNotSame('0', $current, 'Precondition: the row updated now should count this month.');
+        $expected = DashboardHtml::cardTitleValue(
+            (string) $client->get('Dashboard', ['bulan' => (string) $bulan, 'tahun' => (string) $tahun])->getBody(),
+            'Murid Placement Test'
+        );
+        $this->assertNotSame('0', $expected, 'Precondition: the mid-month row should count for this month.');
 
-        $response = $client->get('Dashboard', ['bulan' => date('n'), 'tahun' => '99999']);
+        $response = $client->get('Dashboard', ['bulan' => (string) $bulan, 'tahun' => '99999']);
         $this->assertSame(200, $response->getStatusCode(), 'An out-of-range tahun must not make the dashboard error out.');
 
         $invalid = DashboardHtml::cardTitleValue((string) $response->getBody(), 'Murid Placement Test');
         $this->assertSame(
-            $current,
+            $expected,
             $invalid,
-            'An out-of-range tahun should fall back to the current month. Got: ' .
+            'An out-of-range tahun should fall back to the current year. Got: ' .
             var_export($invalid, true)
         );
     }

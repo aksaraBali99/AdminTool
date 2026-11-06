@@ -169,6 +169,20 @@ class TestDb
         return (int) $stmt->fetchColumn();
     }
 
+    /** Mirrors one column of M_dashboard::get_lead_status_counts() - see sumPaidTagihan()'s docblock for why. */
+    public static function countLeadStatus(string $statusBaru, int $bulan, int $tahun): int
+    {
+        $start = sprintf('%04d-%02d-01 00:00:00', $tahun, $bulan);
+        $end = date('Y-m-d H:i:s', strtotime("$start +1 month"));
+        $stmt = self::connect()->prepare(
+            'SELECT COUNT(DISTINCT h.id_peserta) FROM lead_status_history h ' .
+            'JOIN peserta p ON p.id_peserta = h.id_peserta ' .
+            'WHERE h.status_baru = ? AND h.tgl_update >= ? AND h.tgl_update < ?'
+        );
+        $stmt->execute([$statusBaru, $start, $end]);
+        return (int) $stmt->fetchColumn();
+    }
+
     /** Inserts a mock history record into lead_status_history */
     public static function insertLeadHistory(int $idPeserta, string $statusBaru, string $tglUpdate): void
     {

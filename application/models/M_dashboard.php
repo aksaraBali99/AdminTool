@@ -56,7 +56,7 @@ class M_dashboard extends CI_Model
         return $this->db->count_all('data_jenis_kelas');
     }
 
-    // Jadwal Trial / Placement Test lead counts for the month, by input_at
+    // Distinct leads moved to Jadwal Trial / Placement Test during the month, from lead_status_history
     public function get_lead_status_counts($month = null, $year = null)
     {
         $month = (int) $month;

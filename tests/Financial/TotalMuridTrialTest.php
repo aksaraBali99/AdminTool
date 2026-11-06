@@ -29,27 +29,36 @@ final class TotalMuridTrialTest extends TestCase
 
     public function test_counts_only_peserta_rows_with_status_jadwal_trial_this_month(): void
     {
+        // Pinned to the 15th of a fixed month and requested explicitly, so the
+        // result doesn't depend on when (or in which timezone) the test runs.
+        $bulan = 6;
+        $tahun = 2026;
+        $before = TestDb::countLeadStatus('Jadwal Trial', $bulan, $tahun);
+
         $id1 = TestDb::insertPeserta(['nama_anak' => 'Decoy Trial']);
         $this->insertedIds[] = $id1;
-        TestDb::insertLeadHistory($id1, 'Trial', date('Y-m-d H:i:s'));
+        TestDb::insertLeadHistory($id1, 'Trial', '2026-06-15 12:00:00');
 
         $id2 = TestDb::insertPeserta(['nama_anak' => 'Target Jadwal Trial']);
         $this->insertedIds[] = $id2;
-        TestDb::insertLeadHistory($id2, 'Jadwal Trial', date('Y-m-d H:i:s'));
+        TestDb::insertLeadHistory($id2, 'Jadwal Trial', '2026-06-15 12:00:00');
+
+        // Logged twice in the month: still one student.
+        TestDb::insertLeadHistory($id2, 'Jadwal Trial', '2026-06-20 12:00:00');
 
         $client = new ApiClient();
         $client->loginAs('admin');
 
-        $response = $client->get('Dashboard');
+        $response = $client->get('Dashboard', ['bulan' => (string) $bulan, 'tahun' => (string) $tahun]);
         $this->assertSame(200, $response->getStatusCode());
 
         $value = DashboardHtml::cardTitleValue((string) $response->getBody(), 'Murid Trial');
-        
+
         $this->assertSame(
-            '1',
+            (string) ($before + 1),
             $value,
-            "Expected 1 dynamic target row with status_baru='Jadwal Trial'. The decoy has " .
-            "status_baru='Trial' and must not be counted. Got: " .
+            "Expected one more than the $before pre-existing 'Jadwal Trial' leads: the target counts once " .
+            "despite two history rows, and the decoy has status_baru='Trial'. Got: " .
             var_export($value, true)
         );
     }
