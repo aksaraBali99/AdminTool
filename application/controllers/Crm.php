@@ -153,13 +153,8 @@ class Crm extends CI_Controller
     // Log status change
     private function log_status_change($id_peserta, $status_lama, $status_baru)
     {
-        $this->db->insert('lead_status_history', [
-            'id_peserta' => $id_peserta,
-            'status_lama' => $status_lama,
-            'status_baru' => $status_baru,
-            'tgl_update' => date('Y-m-d H:i:s'),
-            'updated_by' => $this->session->userdata('id_user')
-        ]);
+        $this->load->model('m_lead_history');
+        $this->m_lead_history->log_status_change($id_peserta, $status_lama, $status_baru);
     }
     
     // Log kontak change

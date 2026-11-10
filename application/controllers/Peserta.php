@@ -230,10 +230,12 @@ class Peserta extends CI_Controller
         );
 
         $id_jadwal_kelas = $i->post('id_jadwal_kelas');
+        $this->load->model('m_lead_history');
 
         if ($tipe_form == "add") {
             $this->db->insert('peserta', $data);
             $id = $this->db->insert_id();
+            $this->m_lead_history->log_status_change($id, null, $data['status']);
 
             $bulan = date('m');
             $tahun = date('Y');
@@ -252,7 +254,11 @@ class Peserta extends CI_Controller
             $this->db->insert('tagihan', $invoice_data);
         } else {
             $id = $i->post('id_peserta');
+            $current = $this->db->select('status')->where('id_peserta', $id)->get('peserta')->row();
             $this->db->where('id_peserta', $id)->update('peserta', $data);
+            if ($current) {
+                $this->m_lead_history->log_status_change($id, $current->status, $data['status']);
+            }
             $this->db->delete('peserta_jadwal', ['id_peserta' => $id]);
         }
 

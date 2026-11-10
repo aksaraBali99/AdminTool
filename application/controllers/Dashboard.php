@@ -20,7 +20,14 @@ class Dashboard extends CI_Controller
     {
         $jabatan = $this->session->userdata('jabatan');
         $bulan = isset($_GET['bulan']) ? (int) $_GET['bulan'] : (int) date('m');
+        if ($bulan < 1 || $bulan > 12) {
+            $bulan = (int) date('m');
+        }
+        
         $tahun = isset($_GET['tahun']) ? (int) $_GET['tahun'] : (int) date('Y');
+        if ($tahun < 2000 || $tahun > 2100) {
+            $tahun = (int) date('Y');
+        }
         
         // Common data for all dashboards
         $data = array();
@@ -55,7 +62,11 @@ class Dashboard extends CI_Controller
             $data['total_pengajar'] = $this->m_dashboard->get_total_pengajar();
             $data['total_kelas'] = $this->m_dashboard->get_total_kelas();
             $data['total_peserta_baru'] = $this->m_dashboard->get_total_peserta_baru($bulan, $tahun);
-            $data['total_murid_trial'] = $this->m_dashboard->get_total_murid_trial($bulan, $tahun);
+            
+            $lead_counts = $this->m_dashboard->get_lead_status_counts($bulan, $tahun);
+            $data['total_murid_trial']          = $lead_counts['total_trial'];
+            $data['total_murid_placement_test'] = $lead_counts['total_placement_test'];
+
             $data['spp_belum_dibayar'] = $this->m_dashboard->get_spp_belum_dibayar($bulan, $tahun);
 
             
@@ -86,6 +97,9 @@ class Dashboard extends CI_Controller
             $data['total_pembayaran_lalu'] = $pembayaran['total_bulan_lalu'];
             $data['persentase_pembayaran'] = $pembayaran['persentase'];
         }
+        
+        $data['bulan_aktif'] = $bulan;
+        $data['tahun_aktif'] = $tahun;
 
         $this->load->view('layouts/wrapper', $data);
     }
