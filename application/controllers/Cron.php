@@ -8,9 +8,9 @@ class Cron extends CI_Controller
     public function __construct()
     {
         parent::__construct();
-        // if (!$this->input->is_cli_request()) {
-        //     exit('Akses hanya melalui CLI');
-        // }
+        if (!$this->input->is_cli_request()) {
+            exit('Akses hanya melalui CLI');
+        }
         $this->load->helper('custom_helper');
         $this->load->model('m_masterdata');
         $this->load->model('m_tagihan');

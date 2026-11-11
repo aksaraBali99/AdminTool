@@ -4,11 +4,11 @@ on:
   push:
   pull_request:
 
-# There is no database dump in the repo (see docs/LOCAL_SETUP.md - it was
-# stripped before the initial push), so tests/fixtures/schema.sql (a
-# structure-only `mysqldump --no-data` export, no real data) is what lets a
-# from-scratch CI database exist at all. tests/fixtures/seed_test_data.sql
-# only INSERTs into tables it assumes already exist.
+# The CI database is built by running the app's own migrations
+# (application/migrations/, via `php index.php migrate`), the same path
+# DEV/PROD schema changes take - so a schema change shipped without a
+# migration fails here. tests/fixtures/seed_test_data.sql only INSERTs into
+# tables the migrations have already created.
 env:
   TEST_DB_HOST: 127.0.0.1
   TEST_DB_PORT: 3306
@@ -49,8 +49,15 @@ jobs:
 
       - run: composer install --no-interaction --prefer-dist
 
-      - name: Load schema into the empty CI database
-        run: mysql -uroot -proot -h127.0.0.1 -P3306 admintool_test < tests/fixtures/schema.sql
+      - name: Build the empty CI database by running migrations
+        run: php index.php migrate
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_USER: root
+          DB_PASS: root
+          DB_NAME: admintool_test
+          CI_ENV: testing
 
       - name: Run PHPUnit suite (tests/run-tests.sh reseeds fixture data itself)
         run: composer test
@@ -88,8 +95,15 @@ jobs:
 
       - run: composer install --no-interaction --prefer-dist
 
-      - name: Load schema into the empty CI database
-        run: mysql -uroot -proot -h127.0.0.1 -P3306 admintool_test < tests/fixtures/schema.sql
+      - name: Build the empty CI database by running migrations
+        run: php index.php migrate
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_USER: root
+          DB_PASS: root
+          DB_NAME: admintool_test
+          CI_ENV: testing
 
       - uses: actions/setup-node@v4
         with:

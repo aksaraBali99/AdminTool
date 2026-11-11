@@ -19,7 +19,7 @@ import, and fixes for the production-only `.htaccess` quirks below), see
 
 1. Point a PHP 7.x host (Apache/Nginx + `mod_rewrite`) at this directory, with `index.php` as the front controller.
 2. Create a MySQL database and set credentials via environment variables (`DB_HOST`, `DB_USER`, `DB_PASS`, `DB_NAME`) or by editing `application/config/database.php` directly for local dev. **Do not commit real credentials** — that file is meant to stay generic in this repo.
-3. This repo does **not** include a database dump/schema — none was present in the export this repo was built from. You'll need to obtain the schema (and any seed data) separately from the current hosting environment and import it before the app will run.
+3. Build the database structure with `php index.php migrate` (run with the same `DB_*` variables). The repo holds the schema as migrations in `application/migrations/`, but no data — import a data dump separately if you need one. See [docs/DATABASE_CHANGES.md](docs/DATABASE_CHANGES.md).
 4. Set `application/config/config.php`'s `encryption_key` to a real random value for production use (it ships empty).
 5. `uploads/` is kept as an empty runtime directory (see `.gitignore`) — actual uploaded files (logos, documents, etc.) are not tracked in version control, both to keep the repo small and because they may contain personal data.
 

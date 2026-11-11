@@ -98,10 +98,9 @@ function sendWa($no_hp, $isi_pesan, $token)
         CURLOPT_POSTFIELDS => array(
             'target' => $no_hp,
             'message' => $isi_pesan,
-            'url' => 'https://md.fonnte.com/images/wa-logo.png',
             'filename' => 'filename',
             'schedule' => 0,
-            'typing' => false,
+            'typing' => true,
             'delay' => '2',
             'countryCode' => '62',
             'followup' => 0,

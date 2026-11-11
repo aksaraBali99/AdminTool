@@ -1,6 +1,10 @@
 <?php
 class M_dashboard extends CI_Model
 {
+    const STATUS_REGISTRASI     = 'Registrasi Kelas';
+    const STATUS_JADWAL_TRIAL   = 'Jadwal Trial';
+    const STATUS_PLACEMENT_TEST = 'Placement Test';
+
     public function get_total_peserta($month = null, $year = null)
     {
         if ($month == null || $year == null) {
@@ -10,7 +14,7 @@ class M_dashboard extends CI_Model
 
         $this->db->from('peserta');
         $this->db->where('status_siswa', 'Aktif'); 
-        $this->db->where('status', 'Registrasi Kelas'); 
+        $this->db->where('status', self::STATUS_REGISTRASI); 
         
         $where_clause = "(
             YEAR(COALESCE(tgl_konversi_siswa, input_at)) < $year 
@@ -35,7 +39,7 @@ class M_dashboard extends CI_Model
         $year = (int) $year;
 
         $this->db->from('peserta');
-        $this->db->where('status', 'Registrasi Kelas'); 
+        $this->db->where('status', self::STATUS_REGISTRASI); 
 
         $this->db->where("MONTH(COALESCE(tgl_konversi_siswa, input_at)) = $month");
         $this->db->where("YEAR(COALESCE(tgl_konversi_siswa, input_at)) = $year");
@@ -51,24 +55,43 @@ class M_dashboard extends CI_Model
     {
         return $this->db->count_all('data_jenis_kelas');
     }
-    
-    public function get_total_murid_trial($month = null, $year = null)
+
+    // Distinct leads moved to Jadwal Trial / Placement Test during the month, from lead_status_history
+    public function get_lead_status_counts($month = null, $year = null)
     {
-        if ($month == null || $year == null) {
-            $month = date('m');
-            $year = date('Y');
+        $month = (int) $month;
+        $year  = (int) $year;
+
+        if ($month < 1 || $month > 12 || $year < 2000 || $year > 2100) {
+            $month = (int) date('m');
+            $year  = (int) date('Y');
         }
 
-        $month = (int) $month;
-        $year = (int) $year;
+        $start_date = sprintf('%04d-%02d-01 00:00:00', $year, $month);
+        $end_date   = date('Y-m-d H:i:s', strtotime("$start_date +1 month"));
 
-        $this->db->from('peserta');
-        $this->db->where('status', 'Jadwal Trial');   
+        $trial     = $this->db->escape(self::STATUS_JADWAL_TRIAL);
+        $placement = $this->db->escape(self::STATUS_PLACEMENT_TEST);
+
+        // Array form so select() doesn't split the expressions on commas
+        $this->db->select([
+            "COUNT(DISTINCT CASE WHEN h.status_baru = $trial THEN h.id_peserta END) AS total_trial",
+            "COUNT(DISTINCT CASE WHEN h.status_baru = $placement THEN h.id_peserta END) AS total_placement_test"
+        ], FALSE);
+
+        $this->db->from('lead_status_history h');
+        $this->db->join('peserta p', 'p.id_peserta = h.id_peserta');
         
-        $this->db->where("MONTH(input_at) = $month");
-        $this->db->where("YEAR(input_at) = $year");
+        $this->db->where_in('h.status_baru', [self::STATUS_JADWAL_TRIAL, self::STATUS_PLACEMENT_TEST]);
+        $this->db->where('h.tgl_update >=', $start_date);
+        $this->db->where('h.tgl_update <', $end_date);
         
-        return $this->db->count_all_results();
+        $row = $this->db->get()->row();
+        
+        return [
+            'total_trial'          => $row ? (int) $row->total_trial : 0,
+            'total_placement_test' => $row ? (int) $row->total_placement_test : 0
+        ];
     }
 
     public function get_total_pembayaran($month = null, $year = null)
