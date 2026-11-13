@@ -562,7 +562,7 @@
                         <select name="id_guru" class="form-control" required>
                             <option value="">-- Pilih Guru --</option>
                             <?php foreach($pengajar as $p): ?>
-                                <option value="<?= $p->id_pengajar ?>"><?= $p->nama ?></option>
+                                <option value="<?= $p->id_pengajar ?>"><?= htmlspecialchars($p->nama, ENT_QUOTES, 'UTF-8') ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -637,7 +637,7 @@
                         <select name="id_guru" class="form-control" required>
                             <option value="">-- Pilih Guru --</option>
                             <?php foreach($pengajar as $p): ?>
-                                <option value="<?= $p->id_pengajar ?>"><?= $p->nama ?></option>
+                                <option value="<?= $p->id_pengajar ?>"><?= htmlspecialchars($p->nama, ENT_QUOTES, 'UTF-8') ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -700,9 +700,14 @@
 $(document).ready(function() {
     const id_siswa = <?= $siswa->id_peserta ?>;
     
+    function escapeHtml(text) {
+        if (!text) return '-';
+        return $('<div>').text(text).html();
+    }
+
     // Load absensi on page load
     loadAbsensi();
-    
+
     function loadAbsensi() {
         $.post('<?= site_url("Siswa/get_absensi") ?>', {
             id_siswa: id_siswa,
@@ -713,7 +718,7 @@ $(document).ready(function() {
             var html = '';
             
             if (!data.absensi || data.absensi.length === 0) {
-                html = '<tr><td colspan="3" class="text-center">Tidak ada data absensi</td></tr>';
+                html = '<tr><td colspan="6" class="text-center">Tidak ada data absensi</td></tr>';
             } else {
                 data.absensi.forEach(function(a) {
                     var badge = 'secondary';
@@ -729,10 +734,10 @@ $(document).ready(function() {
 
                     html += '<tr>';
                     html += '<td>' + formatDate(a.tanggal) + '</td>';
-                    html += '<td>' + (a.nama_guru || '-') + '</td>';
+                    html += '<td>' + escapeHtml(a.nama_guru) + '</td>';
                     html += '<td><span class="badge badge-primary">' + (a.jumlah_sesi || 1) + ' Sesi</span></td>';
                     html += '<td><span class="badge badge-' + badge + '">' + a.status_hadir + '</span></td>';
-                    html += '<td>' + (a.keterangan || '-') + '</td>';
+                    html += '<td>' + escapeHtml(a.keterangan) + '</td>';
                     html += '<td><button class="btn btn-danger btn-xs btn-hapus-absensi" data-id="' + a.id + '" title="Hapus"><i class="fa fa-trash"></i></button></td>';
                     html += '</tr>';
                 });

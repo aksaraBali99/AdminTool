@@ -200,7 +200,7 @@ class M_siswa extends CI_Model
             COALESCE(SUM(CASE WHEN status_hadir = 'Izin' THEN 1 ELSE 0 END), 0) as total_izin,
             COALESCE(SUM(CASE WHEN status_hadir = 'Sakit' THEN 1 ELSE 0 END), 0) as total_sakit,
             COALESCE(SUM(CASE WHEN status_hadir = 'Alpha' THEN 1 ELSE 0 END), 0) as total_alpha,
-            COUNT(*) as total_hari
+            COUNT(DISTINCT tanggal) as total_hari
         ");
         $this->db->where('id_siswa', $id_siswa);
         
@@ -220,13 +220,21 @@ class M_siswa extends CI_Model
         $bulan    = (int) $bulan;
         $tahun    = (int) $tahun;
 
-        $this->db->select("COALESCE(SUM(jumlah_sesi), 0) as total_sesi");
-        $this->db->where('id_siswa', $id_siswa);
-        $this->db->where('status_hadir', 'Hadir'); 
-        $this->db->where('MONTH(tanggal)', $bulan);
-        $this->db->where('YEAR(tanggal)', $tahun);
-        
-        $result = $this->db->get('absensi_siswa')->row();
+        $start_date = sprintf('%04d-%02d-01', $tahun, $bulan);
+        $end_date   = date('Y-m-t', strtotime($start_date));
+
+        // Kunci baris siswa di tabel peserta agar transaksi lain menunggu hingga proses ini selesai
+        $this->db->query("SELECT id_peserta FROM peserta WHERE id_peserta = ? FOR UPDATE", [$id_siswa]);
+
+        // Hitung sesi dengan index tanggal (menggunakan binding)
+        $sql = "SELECT COALESCE(SUM(jumlah_sesi), 0) as total_sesi 
+                FROM absensi_siswa 
+                WHERE id_siswa = ? 
+                  AND status_hadir = 'Hadir' 
+                  AND tanggal >= ? 
+                  AND tanggal <= ?";
+                  
+        $result = $this->db->query($sql, [$id_siswa, $start_date, $end_date])->row();
         return $result ? (int) $result->total_sesi : 0;
     }
     
