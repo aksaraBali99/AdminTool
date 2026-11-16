@@ -748,7 +748,7 @@ $(document).ready(function() {
             // Rekap
             var rekap = data.rekap;
             var rekapHtml = '<div class="row justify-content-center">';
-            rekapHtml += '<div class="col-md-2"><div class="alert alert-success"><strong>' + (rekap.total_hadir || 0) + '</strong> Hadir</div></div>';
+            rekapHtml += '<div class="col-md-2"><div class="alert alert-success"><strong>' + (rekap.total_hadir || 0) + '</strong> Hadir (Sesi)</div></div>';
             rekapHtml += '<div class="col-md-2"><div class="alert alert-warning"><strong>' + (rekap.total_izin || 0) + '</strong> Izin</div></div>';
             rekapHtml += '<div class="col-md-2"><div class="alert alert-secondary"><strong>' + (rekap.total_sakit || 0) + '</strong> Sakit</div></div>';
             rekapHtml += '<div class="col-md-2"><div class="alert alert-danger"><strong>' + (rekap.total_alpha || 0) + '</strong> Alpha</div></div>';

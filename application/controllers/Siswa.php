@@ -4,6 +4,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
 class Siswa extends CI_Controller
 {
     const MAX_SESI_PER_BULAN = 8;
+    const STATUS_HADIR = ['Hadir', 'Izin', 'Sakit', 'Alpha'];
 
     public function __construct()
     {
@@ -442,10 +443,10 @@ class Siswa extends CI_Controller
     public function input_absensi()
     {
         $id_siswa     = (int) $this->input->post('id_siswa');
-        $tanggal      = $this->input->post('tanggal');
-        $id_guru      = $this->input->post('id_guru');
+        $tanggal      = (string) $this->input->post('tanggal');
+        $id_guru      = (int) $this->input->post('id_guru');
         $status_hadir = $this->input->post('status_hadir');
-        
+
         // Pastikan jumlah sesi hanya 1 atau 2 (cegah angka negatif/abnormal)
         $jumlah_sesi  = intval($this->input->post('jumlah_sesi'));
         if (!in_array($jumlah_sesi, [1, 2])) {
@@ -454,33 +455,42 @@ class Siswa extends CI_Controller
         }
 
         // Validasi ID Guru tidak boleh kosong
-        if (empty($id_guru)) {
+        if ($id_guru <= 0) {
             echo json_encode(['status' => 'error', 'message' => 'Guru Pengajar harus dipilih!']);
             return;
         }
 
-        // Validasi Format Tanggal
-        if (empty($tanggal) || strtotime($tanggal) === false) {
+        // Validasi status kehadiran (harus salah satu nilai enum di database)
+        if (!in_array($status_hadir, self::STATUS_HADIR, true)) {
+            echo json_encode(['status' => 'error', 'message' => 'Status kehadiran tidak valid!']);
+            return;
+        }
+
+        // Validasi Format Tanggal (Y-m-d yang benar-benar ada, mis. tolak 2026-02-31)
+        if ($this->parse_tanggal($tanggal) === null) {
             echo json_encode(['status' => 'error', 'message' => 'Format tanggal tidak valid!']);
             return;
         }
 
-        $bulan = (int) date('m', strtotime($tanggal));
-        $tahun = (int) date('Y', strtotime($tanggal));
-        
+        $bulan = (int) substr($tanggal, 5, 2);
+        $tahun = (int) substr($tanggal, 0, 4);
+
+        $this->db->trans_start();
+
+        // Mengunci baris siswa, jadi pengecekan tanggal ganda & kuota di bawah
+        // aman dari dua penyimpanan yang terjadi bersamaan.
+        $current_sesi = $this->m_siswa->count_monthly_sessions($id_siswa, $bulan, $tahun);
+
         // Tolak jika sudah ada absensi pada tanggal yang sama
         if ($this->m_siswa->check_absensi_exists($id_siswa, $tanggal)) {
+            $this->db->trans_rollback();
             echo json_encode([
-                'status'  => 'error', 
+                'status'  => 'error',
                 'message' => 'Absensi untuk tanggal ' . date('d/m/Y', strtotime($tanggal)) . ' sudah ada!'
             ]);
             return;
         }
-        
-        $this->db->trans_start();
-        
-        $current_sesi = $this->m_siswa->count_monthly_sessions($id_siswa, $bulan, $tahun);
-        
+
         if ($status_hadir == 'Hadir' && ($current_sesi + $jumlah_sesi) > self::MAX_SESI_PER_BULAN) {
             $this->db->trans_rollback();
             echo json_encode([
@@ -534,9 +544,15 @@ class Siswa extends CI_Controller
     
     public function download_absensi($id_siswa)
     {
-        $date_from = $this->input->get('date_from');
-        $date_to = $this->input->get('date_to');
-        
+        // Tanggal kosong/tidak valid: default ke bulan berjalan (s/d hari ini).
+        // Tanpa ini, tanggal kosong terbaca sebagai Januari 1970 dan status
+        // kuota mencetak setiap bulan sejak 1970.
+        $date_to   = $this->parse_tanggal($this->input->get('date_to')) ?: date('Y-m-d');
+        $date_from = $this->parse_tanggal($this->input->get('date_from')) ?: date('Y-m-01', strtotime($date_to));
+        if ($date_from > $date_to) {
+            list($date_from, $date_to) = array($date_to, $date_from);
+        }
+
         $siswa = $this->m_siswa->get_siswa_detail($id_siswa);
         $absensi = $this->m_siswa->get_absensi($id_siswa, $date_from, $date_to);
         $rekap = $this->m_siswa->get_rekap_absensi($id_siswa, $date_from, $date_to);
@@ -571,14 +587,7 @@ class Siswa extends CI_Controller
         $pdf->Line(15, $pdf->GetY(), 195, $pdf->GetY());
         $pdf->Ln(6);
         
-        // Cek Kelengkapan Kuota (8 Sesi)
         $total_hadir_periode = intval($rekap->total_hadir ?? 0);
-        $bulan_filter = date('m', strtotime($date_to));
-        $tahun_filter = date('Y', strtotime($date_to));
-        
-        $status_kuota = ($total_hadir_periode >= self::MAX_SESI_PER_BULAN) ? 'LENGKAP' : 'BELUM LENGKAP';
-        $color_kuota  = ($total_hadir_periode >= self::MAX_SESI_PER_BULAN) ? array(39, 174, 96) : array(230, 126, 34); 
-        $nama_bulan = date('F Y', strtotime($date_to));
 
         // Info Siswa & Status Kuota
         $pdf->SetFont('helvetica', '', 10);
@@ -607,17 +616,12 @@ class Siswa extends CI_Controller
         
         $current_time = strtotime(date('Y-m-01', strtotime($date_from)));
         $last_time = strtotime(date('Y-m-01', strtotime($date_to)));
-        
+        $sesi_per_bulan = $this->sesi_hadir_per_bulan($absensi);
+
         if ($current_time == $last_time) {
             // Jika filter hanya 1 bulan, tampilkan sebaris
-            $total_sesi_bulan = 0;
-            foreach ($absensi as $a) {
-                if ($a->status_hadir == 'Hadir' && date('Y-m', strtotime($a->tanggal)) == date('Y-m', $current_time)) {
-                    $total_sesi_bulan += (int) $a->jumlah_sesi;
-                }
-            }
-            $status_kuota = ($total_sesi_bulan >= self::MAX_SESI_PER_BULAN) ? 'LENGKAP' : 'BELUM LENGKAP';
-            $color_kuota  = ($total_sesi_bulan >= self::MAX_SESI_PER_BULAN) ? array(39, 174, 96) : array(230, 126, 34); 
+            $total_sesi_bulan = $sesi_per_bulan[date('Y-m', $current_time)] ?? 0;
+            list($status_kuota, $color_kuota) = $this->status_kuota($total_sesi_bulan);
             $pdf->SetTextColor($color_kuota[0], $color_kuota[1], $color_kuota[2]);
             $pdf->Cell(0, 6, $status_kuota . ' (' . $total_sesi_bulan . ' Sesi Hadir di ' . date('F Y', $current_time) . ')', 0, 1);
             $pdf->SetTextColor(0, 0, 0);
@@ -625,16 +629,10 @@ class Siswa extends CI_Controller
             // Jika filter lintas bulan, simpan posisi Y awal agar item pertama tidak ke-enter
             $start_y = $pdf->GetY();
             $first_item = true;
-            
+
             while ($current_time <= $last_time) {
-                $total_sesi_bulan = 0;
-                foreach ($absensi as $a) {
-                    if ($a->status_hadir == 'Hadir' && date('Y-m', strtotime($a->tanggal)) == date('Y-m', $current_time)) {
-                        $total_sesi_bulan += (int) $a->jumlah_sesi;
-                    }
-                }
-                $status_kuota = ($total_sesi_bulan >= self::MAX_SESI_PER_BULAN) ? 'LENGKAP' : 'BELUM LENGKAP';
-                $color_kuota  = ($total_sesi_bulan >= self::MAX_SESI_PER_BULAN) ? array(39, 174, 96) : array(230, 126, 34); 
+                $total_sesi_bulan = $sesi_per_bulan[date('Y-m', $current_time)] ?? 0;
+                list($status_kuota, $color_kuota) = $this->status_kuota($total_sesi_bulan);
                 
                 // Atur indentasi agar sejajar dengan titik dua
                 $pdf->SetX(48); 
@@ -768,6 +766,35 @@ class Siswa extends CI_Controller
         // Output PDF
         $filename = 'Laporan_Absensi_' . preg_replace('/[^A-Za-z0-9]/', '_', $siswa->nama_anak) . '_' . date('Ymd') . '.pdf';
         $pdf->Output($filename, 'D');
+    }
+
+    /** Returns $value as Y-m-d when it is a real calendar date, otherwise null. */
+    private function parse_tanggal($value)
+    {
+        $value = (string) $value;
+        $tgl = DateTime::createFromFormat('!Y-m-d', $value);
+        return ($tgl && $tgl->format('Y-m-d') === $value) ? $value : null;
+    }
+
+    /** Sums the 'Hadir' sessions in $absensi per month, keyed 'Y-m'. */
+    private function sesi_hadir_per_bulan($absensi)
+    {
+        $per_bulan = array();
+        foreach ($absensi as $a) {
+            if ($a->status_hadir === 'Hadir') {
+                $bulan = substr($a->tanggal, 0, 7);
+                $per_bulan[$bulan] = ($per_bulan[$bulan] ?? 0) + (int) $a->jumlah_sesi;
+            }
+        }
+        return $per_bulan;
+    }
+
+    /** Quota label and its RGB colour for a month's session total. */
+    private function status_kuota($total_sesi)
+    {
+        return ($total_sesi >= self::MAX_SESI_PER_BULAN)
+            ? array('LENGKAP', array(39, 174, 96))
+            : array('BELUM LENGKAP', array(230, 126, 34));
     }
 
     // =============================================
