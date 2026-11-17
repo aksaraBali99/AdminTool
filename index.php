@@ -38,6 +38,45 @@
 
 /*
  *---------------------------------------------------------------
+ * MAINTENANCE MODE
+ *---------------------------------------------------------------
+ *
+ * While a file named "maintenance.on" exists next to this index.php,
+ * every web request gets a short "under maintenance" page (HTTP 503),
+ * so nobody can save data while a deploy backs up and migrates the
+ * database. The deploy creates and removes the file; see
+ * docs/HEALTH_AND_MAINTENANCE.md.
+ *
+ * Not affected:
+ *   - command-line runs (php index.php migrate keeps working), and
+ *   - the Health page, so a deploy can check the new code before it
+ *     takes the maintenance page down.
+ */
+if (PHP_SAPI !== 'cli' && file_exists(__DIR__.DIRECTORY_SEPARATOR.'maintenance.on'))
+{
+	$maintenance_path = (string) parse_url(isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '/', PHP_URL_PATH);
+	if ( ! preg_match('#^/(index\.php/)?health/?$#i', $maintenance_path))
+	{
+		header('HTTP/1.1 503 Service Unavailable', TRUE, 503);
+		header('Retry-After: 120');
+		header('Cache-Control: no-store');
+		header('Content-Type: text/html; charset=UTF-8');
+		echo '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">'
+			.'<meta name="viewport" content="width=device-width, initial-scale=1">'
+			.'<title>Sedang dalam pemeliharaan</title>'
+			.'<style>body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#333;'
+			.'display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px;text-align:center}'
+			.'h1{font-size:1.4em}</style></head><body><div>'
+			.'<h1>Sedang dalam pemeliharaan</h1>'
+			.'<p>Aplikasi sedang diperbarui. Silakan coba lagi dalam beberapa menit.</p>'
+			.'<p><em>Under maintenance: the app is being updated. Please try again in a few minutes.</em></p>'
+			.'</div></body></html>';
+		exit;
+	}
+}
+
+/*
+ *---------------------------------------------------------------
  * APPLICATION ENVIRONMENT
  *---------------------------------------------------------------
  *

@@ -29,6 +29,10 @@ application/config/database.local.php
 # on disk rather than sharing one tracked file.
 .htaccess
 
+# Maintenance-mode switch, created and removed by the deploy (see
+# docs/HEALTH_AND_MAINTENANCE.md). Never commit it: it would take the site down.
+maintenance.on
+
 # Composer dependencies (installed via `composer install`)
 vendor/
 
