@@ -1,0 +1,63 @@
+name: Migrate
+
+# Runs pending database migrations on the deployed sites after Hostinger
+# pulls new code:
+#   - push to main       -> DEV
+#   - push to production -> both PROD sites (Pemogan and Citarum)
+# It can also be started by hand from the Actions tab (e.g. to retry).
+#
+# Each site is a GitHub Environment holding two secrets, SITE_URL and
+# MIGRATE_TOKEN (the site's SetEnv MIGRATE_TOKEN value). The PROD
+# environments should have "Required reviewers" set, so the migration waits
+# for someone to approve it after taking the database backup.
+# See docs/DATABASE_CHANGES.md.
+
+on:
+  push:
+    branches: [main, production]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which sites to migrate
+        type: choice
+        options: [dev, production]
+        default: dev
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      sites: ${{ steps.pick.outputs.sites }}
+    steps:
+      - id: pick
+        run: |
+          target="${{ github.event_name == 'workflow_dispatch' && inputs.target || '' }}"
+          if [ -z "$target" ]; then
+            [ "${{ github.ref_name }}" = "production" ] && target=production || target=dev
+          fi
+          if [ "$target" = "production" ]; then
+            echo 'sites=["prod-pemogan","prod-citarum"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'sites=["dev"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  migrate:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        site: ${{ fromJSON(needs.plan.outputs.sites) }}
+    environment: ${{ matrix.site }}
+    # Never run two migrations against the same site at once; queue instead.
+    concurrency:
+      group: migrate-${{ matrix.site }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run migrations on ${{ matrix.site }}
+        run: bash .github/scripts/run-migrations.sh
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          MIGRATE_TOKEN: ${{ secrets.MIGRATE_TOKEN }}

@@ -55,15 +55,48 @@ would be missing on the other environments and in CI.
 
 ## Running migrations on DEV and PROD
 
-After a deploy, run pending migrations once per site, either:
+The **Migrate** GitHub Actions workflow (`.github/workflows/migrate.yml`)
+runs pending migrations after each deploy:
+
+| Push to | Sites migrated | GitHub Environment(s) |
+| --- | --- | --- |
+| `main` | DEV | `dev` |
+| `production` | both PROD sites | `prod-pemogan`, `prod-citarum` |
+
+It calls each site's Migrate URL and keeps retrying for up to 10 minutes
+until the site reports the newest migration in the pushed code, because
+Hostinger may still be pulling the code when the workflow starts. It fails,
+and GitHub emails whoever pushed, if the token is wrong (404), a migration
+fails (500), or the site never catches up. To retry, or to run it without
+a push, open Actions → Migrate → **Run workflow** and pick `dev` or
+`production`.
+
+**PROD waits for approval.** The `prod-*` environments have required
+reviewers, so after a release the PROD jobs pause on "Waiting for review".
+Take each PROD site's database backup, then approve that site's job.
+
+### Setup (once per site)
+
+1. In the site's `.htaccess` on Hostinger, add a long random token:
+   `SetEnv MIGRATE_TOKEN <random string>`. Without it, or with the wrong
+   token, the Migrate page answers 404. Keep the token out of Git and chat
+   messages.
+2. In GitHub, Settings → Environments → New environment, named `dev`,
+   `prod-pemogan` or `prod-citarum`. Add two environment secrets:
+   `SITE_URL` (for example `https://adminpemogan.englishhubbali.com`, no
+   trailing `/index.php`) and `MIGRATE_TOKEN` (the same token as in
+   `.htaccess`).
+3. For the two `prod-*` environments, tick **Required reviewers** and add
+   the people who take the backups. Under "Deployment branches and tags",
+   allow only `production` (and `main` for `dev`).
+
+### Running a migration by hand
+
+If the workflow can't reach a site, either:
 
 - **Browser:** open `https://<site>/index.php/Migrate?token=<MIGRATE_TOKEN>`
 - **SSH:** `php index.php migrate` from the site folder, with the site's
   `DB_*` variables set
-
-Each site's `.htaccess` needs a long random token, for example
-`SetEnv MIGRATE_TOKEN <random string>`. Without it, or with the wrong token,
-the page answers 404. Keep the token out of Git and chat messages.
 
 The page replies in plain text: `Already up to date at version ...`,
 `Migrated from version ... to ...`, or `Migration failed: ...` (HTTP 500)

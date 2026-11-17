@@ -19,10 +19,12 @@ both PROD sites. A release is a pull request from `main` into `production`.
    button's dropdown; GitHub remembers the last choice). Hostinger pulls the new code to
    both PROD sites, and the **Release / publish** workflow creates the tag
    `v<VERSION>` and a GitHub Release listing the PRs included.
-5. If the release includes a migration (any new file in
-   `application/migrations/`), take a database backup of each PROD site
-   first, then open its Migrate URL once (see
-   [DATABASE_CHANGES.md](DATABASE_CHANGES.md)).
+5. The **Migrate** workflow then waits for approval of one job per PROD
+   site (Actions → Migrate, "Waiting for review"). For each site, take a
+   database backup first, then approve its job; it runs any pending
+   migrations and fails loudly if one fails. Approve it even when the
+   release has no migration: it then just confirms the site is up to date.
+   See [DATABASE_CHANGES.md](DATABASE_CHANGES.md).
 6. Check the footer of each PROD site shows the new version, and click
    through the main pages.
 
