@@ -29,3 +29,6 @@ for the same reasons documented in `../tests/README.md`.
 
 - `playwright.config.ts` - starts/stops the test server, points at it
 - `tests/login-dashboard.spec.ts` - the smoke test itself
+- `tests/absensi-siswa.spec.ts` - student attendance on Siswa/detail: the
+  Input Absensi form, the table and rekap boxes, the 8-session monthly
+  quota pop-ups, duplicate dates, and notes rendered as text (not HTML)

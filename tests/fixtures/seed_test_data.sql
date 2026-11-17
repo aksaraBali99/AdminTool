@@ -18,6 +18,9 @@ SET FOREIGN_KEY_CHECKS = 0;
 TRUNCATE TABLE user;
 TRUNCATE TABLE data_konfig;
 TRUNCATE TABLE peserta;
+-- Emptied so the attendance e2e test (e2e/tests/absensi-siswa.spec.ts),
+-- which records attendance for peserta #1, starts clean on every run.
+TRUNCATE TABLE absensi_siswa;
 TRUNCATE TABLE peserta_jadwal;
 TRUNCATE TABLE jadwal_kelas;
 TRUNCATE TABLE pengajar;
