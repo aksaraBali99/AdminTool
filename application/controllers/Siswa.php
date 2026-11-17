@@ -3,6 +3,9 @@ defined('BASEPATH') or exit('No direct script access allowed');
 
 class Siswa extends CI_Controller
 {
+    const MAX_SESI_PER_BULAN = 8;
+    const STATUS_HADIR = ['Hadir', 'Izin', 'Sakit', 'Alpha'];
+
     public function __construct()
     {
         parent::__construct();
@@ -439,28 +442,91 @@ class Siswa extends CI_Controller
     
     public function input_absensi()
     {
-        $id_siswa = $this->input->post('id_siswa');
-        $tanggal = $this->input->post('tanggal');
-        
-        // More than one attendance per date is allowed on purpose (matches
-        // PROD), so there is no check_absensi_exists() guard here.
-        
+        $id_siswa     = (int) $this->input->post('id_siswa');
+        $tanggal      = (string) $this->input->post('tanggal');
+        $id_guru      = (int) $this->input->post('id_guru');
+        $status_hadir = $this->input->post('status_hadir');
+
+        // Pastikan jumlah sesi hanya 1 atau 2 (cegah angka negatif/abnormal)
+        $jumlah_sesi  = intval($this->input->post('jumlah_sesi'));
+        if (!in_array($jumlah_sesi, [1, 2])) {
+            echo json_encode(['status' => 'error', 'message' => 'Jumlah sesi tidak valid (harus 1 atau 2)']);
+            return;
+        }
+
+        // Validasi ID Guru tidak boleh kosong
+        if ($id_guru <= 0) {
+            echo json_encode(['status' => 'error', 'message' => 'Guru Pengajar harus dipilih!']);
+            return;
+        }
+
+        // Validasi status kehadiran (harus salah satu nilai enum di database)
+        if (!in_array($status_hadir, self::STATUS_HADIR, true)) {
+            echo json_encode(['status' => 'error', 'message' => 'Status kehadiran tidak valid!']);
+            return;
+        }
+
+        // Validasi Format Tanggal (Y-m-d yang benar-benar ada, mis. tolak 2026-02-31)
+        if ($this->parse_tanggal($tanggal) === null) {
+            echo json_encode(['status' => 'error', 'message' => 'Format tanggal tidak valid!']);
+            return;
+        }
+
+        $bulan = (int) substr($tanggal, 5, 2);
+        $tahun = (int) substr($tanggal, 0, 4);
+
+        $this->db->trans_start();
+
+        // Mengunci baris siswa, jadi pengecekan tanggal ganda & kuota di bawah
+        // aman dari dua penyimpanan yang terjadi bersamaan.
+        $current_sesi = $this->m_siswa->count_monthly_sessions($id_siswa, $bulan, $tahun);
+
+        // Tolak jika sudah ada absensi pada tanggal yang sama
+        if ($this->m_siswa->check_absensi_exists($id_siswa, $tanggal)) {
+            $this->db->trans_rollback();
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'Absensi untuk tanggal ' . date('d/m/Y', strtotime($tanggal)) . ' sudah ada!'
+            ]);
+            return;
+        }
+
+        if ($status_hadir == 'Hadir' && ($current_sesi + $jumlah_sesi) > self::MAX_SESI_PER_BULAN) {
+            $this->db->trans_rollback();
+            echo json_encode([
+                'status'  => 'error', 
+                'message' => 'Gagal: Sisa kuota tidak cukup. Maksimal ' . self::MAX_SESI_PER_BULAN . ' sesi per bulan (Saat ini sudah terpakai ' . $current_sesi . ' sesi).'
+            ]);
+            return;
+        }
+
         $data = array(
-            'id_siswa' => $id_siswa,
-            'tanggal' => $tanggal,
-            'status_hadir' => $this->input->post('status_hadir'),
-            'keterangan' => $this->input->post('keterangan')
+            'id_siswa'     => $id_siswa,
+            'tanggal'      => $tanggal,
+            'id_guru'      => $id_guru,
+            'jumlah_sesi'  => $jumlah_sesi,
+            'status_hadir' => $status_hadir,
+            'keterangan'   => $this->input->post('keterangan')
         );
+        $this->m_siswa->insert_absensi($data);
         
-        $result = $this->m_siswa->insert_absensi($data);
-        
-        if ($result) {
-            echo json_encode(['status' => 'success', 'message' => 'Absensi berhasil disimpan']);
+        $this->db->trans_complete();
+
+        if ($this->db->trans_status() === TRUE) {
+            $total_sesi = $current_sesi + ($status_hadir == 'Hadir' ? $jumlah_sesi : 0);
+            $is_completed = ($total_sesi >= self::MAX_SESI_PER_BULAN);
+            
+            echo json_encode([
+                'status'       => 'success',
+                'message'      => 'Absensi berhasil disimpan' . ($is_completed ? ' (Siswa telah memenuhi ' . self::MAX_SESI_PER_BULAN . 'x kehadiran bulan ini!)' : ''),
+                'total_sesi'   => $total_sesi,
+                'is_completed' => $is_completed
+            ]);
         } else {
             echo json_encode(['status' => 'error', 'message' => 'Gagal menyimpan absensi']);
         }
     }
-    
+        
     public function get_absensi()
     {
         $id_siswa = $this->input->post('id_siswa');
@@ -478,9 +544,15 @@ class Siswa extends CI_Controller
     
     public function download_absensi($id_siswa)
     {
-        $date_from = $this->input->get('date_from');
-        $date_to = $this->input->get('date_to');
-        
+        // Tanggal kosong/tidak valid: default ke bulan berjalan (s/d hari ini).
+        // Tanpa ini, tanggal kosong terbaca sebagai Januari 1970 dan status
+        // kuota mencetak setiap bulan sejak 1970.
+        $date_to   = $this->parse_tanggal($this->input->get('date_to')) ?: date('Y-m-d');
+        $date_from = $this->parse_tanggal($this->input->get('date_from')) ?: date('Y-m-01', strtotime($date_to));
+        if ($date_from > $date_to) {
+            list($date_from, $date_to) = array($date_to, $date_from);
+        }
+
         $siswa = $this->m_siswa->get_siswa_detail($id_siswa);
         $absensi = $this->m_siswa->get_absensi($id_siswa, $date_from, $date_to);
         $rekap = $this->m_siswa->get_rekap_absensi($id_siswa, $date_from, $date_to);
@@ -496,113 +568,171 @@ class Siswa extends CI_Controller
         $pdf->SetTitle('Rekap Absensi - ' . $siswa->nama_anak);
         $pdf->SetSubject('Rekap Absensi Siswa');
         
-        // Remove header/footer
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
-        
-        // Set margins
         $pdf->SetMargins(15, 15, 15);
         $pdf->SetAutoPageBreak(TRUE, 15);
-        
-        // Add page
         $pdf->AddPage();
         
-        // Set font
+        // Header Lembaga
         $pdf->SetFont('helvetica', 'B', 16);
         $pdf->Cell(0, 10, strtoupper($apk[0]->nama_apk), 0, 1, 'C');
         
         $pdf->SetFont('helvetica', '', 12);
-        $pdf->Cell(0, 8, 'Rekap Kehadiran Siswa', 0, 1, 'C');
+        $pdf->Cell(0, 8, 'Laporan Kehadiran & Kuota Absensi Siswa', 0, 1, 'C');
         
-        $pdf->Ln(5);
+        $pdf->Ln(3);
         $pdf->SetDrawColor(44, 62, 80);
         $pdf->SetLineWidth(0.5);
         $pdf->Line(15, $pdf->GetY(), 195, $pdf->GetY());
-        $pdf->Ln(8);
+        $pdf->Ln(6);
         
-        // Info siswa
+        $total_hadir_periode = intval($rekap->total_hadir ?? 0);
+
+        // Info Siswa & Status Kuota
         $pdf->SetFont('helvetica', '', 10);
-        $pdf->Cell(40, 6, 'Nama Siswa', 0, 0);
-        $pdf->Cell(5, 6, ':', 0, 0);
+        $pdf->Cell(30, 6, 'Nama Siswa', 0, 0);
+        $pdf->Cell(3, 6, ':', 0, 0);
         $pdf->SetFont('helvetica', 'B', 10);
-        $pdf->Cell(0, 6, $siswa->nama_anak, 0, 1);
+        $pdf->Cell(80, 6, $siswa->nama_anak, 0, 0);
         
         $pdf->SetFont('helvetica', '', 10);
-        $pdf->Cell(40, 6, 'Nama Orang Tua', 0, 0);
-        $pdf->Cell(5, 6, ':', 0, 0);
-        $pdf->Cell(0, 6, $siswa->nama_ortu, 0, 1);
-        
-        $pdf->Cell(40, 6, 'Periode', 0, 0);
-        $pdf->Cell(5, 6, ':', 0, 0);
+        $pdf->Cell(20, 6, 'Periode', 0, 0);
+        $pdf->Cell(3, 6, ':', 0, 0);
         $pdf->Cell(0, 6, date('d/m/Y', strtotime($date_from)) . ' - ' . date('d/m/Y', strtotime($date_to)), 0, 1);
         
-        $pdf->Ln(5);
+        $pdf->Cell(30, 6, 'Nama Orang Tua', 0, 0);
+        $pdf->Cell(3, 6, ':', 0, 0);
+        $pdf->Cell(80, 6, $siswa->nama_ortu, 0, 0);
         
-        // Rekap boxes
+        $pdf->Cell(20, 6, 'Jenis Kelas', 0, 0);
+        $pdf->Cell(3, 6, ':', 0, 0);
+        $pdf->Cell(0, 6, $siswa->nama_kelas ?: '-', 0, 1);
+        
+        // Highlight Status Kuota Bulanan
         $pdf->SetFont('helvetica', 'B', 10);
-        $box_width = 42;
-        $box_height = 20;
-        $start_x = 15;
+        $pdf->Cell(30, 6, 'Status Kuota', 0, 0);
+        $pdf->Cell(3, 6, ':', 0, 0);
         
-        // Hadir - Green
+        $current_time = strtotime(date('Y-m-01', strtotime($date_from)));
+        $last_time = strtotime(date('Y-m-01', strtotime($date_to)));
+        $sesi_per_bulan = $this->sesi_hadir_per_bulan($absensi);
+
+        if ($current_time == $last_time) {
+            // Jika filter hanya 1 bulan, tampilkan sebaris
+            $total_sesi_bulan = $sesi_per_bulan[date('Y-m', $current_time)] ?? 0;
+            list($status_kuota, $color_kuota) = $this->status_kuota($total_sesi_bulan);
+            $pdf->SetTextColor($color_kuota[0], $color_kuota[1], $color_kuota[2]);
+            $pdf->Cell(0, 6, $status_kuota . ' (' . $total_sesi_bulan . ' Sesi Hadir di ' . date('F Y', $current_time) . ')', 0, 1);
+            $pdf->SetTextColor(0, 0, 0);
+        } else {
+            // Jika filter lintas bulan, simpan posisi Y awal agar item pertama tidak ke-enter
+            $start_y = $pdf->GetY();
+            $first_item = true;
+
+            while ($current_time <= $last_time) {
+                $total_sesi_bulan = $sesi_per_bulan[date('Y-m', $current_time)] ?? 0;
+                list($status_kuota, $color_kuota) = $this->status_kuota($total_sesi_bulan);
+                
+                // Atur indentasi agar sejajar dengan titik dua
+                $pdf->SetX(48); 
+                
+                // Pastikan item pertama di-print di baris yang sama dengan "Status Kuota :"
+                if ($first_item) {
+                    $pdf->SetY($start_y);
+                    $pdf->SetX(48);
+                    $first_item = false;
+                }
+                
+                $pdf->SetTextColor($color_kuota[0], $color_kuota[1], $color_kuota[2]);
+                $pdf->Cell(0, 6, "- " . date('F Y', $current_time) . " : " . $status_kuota . ' (' . $total_sesi_bulan . ' Sesi)', 0, 1);
+                
+                $current_time = strtotime('+1 month', $current_time);
+            }
+            $pdf->SetTextColor(0, 0, 0);
+        }
+        
+        $pdf->Ln(4);
+        
+        // Rekap Boxes (5 Kotak Statistik)
+        $pdf->SetFont('helvetica', 'B', 9);
+        $box_width = 33;
+        $box_height = 18;
+        $start_x = 15;
+        $spacing = 3.5;
+        
+        // Hadir
         $pdf->SetFillColor(39, 174, 96);
         $pdf->SetTextColor(255, 255, 255);
         $pdf->SetXY($start_x, $pdf->GetY());
         $pdf->Cell($box_width, $box_height, '', 1, 0, 'C', true);
-        $pdf->SetXY($start_x, $pdf->GetY() + 3);
-        $pdf->SetFont('helvetica', 'B', 16);
-        $pdf->Cell($box_width, 8, $rekap->total_hadir ?: 0, 0, 0, 'C');
-        $pdf->SetXY($start_x, $pdf->GetY() + 8);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell($box_width, 5, 'HADIR', 0, 0, 'C');
+        $pdf->SetXY($start_x, $pdf->GetY() + 2);
+        $pdf->SetFont('helvetica', 'B', 14);
+        $pdf->Cell($box_width, 7, $total_hadir_periode, 0, 0, 'C');
+        $pdf->SetXY($start_x, $pdf->GetY() + 7);
+        $pdf->SetFont('helvetica', '', 7);
+        $pdf->Cell($box_width, 5, 'HADIR (SESI)', 0, 0, 'C');
         
-        // Izin - Orange
+        // Izin
         $pdf->SetFillColor(243, 156, 18);
-        $pdf->SetXY($start_x + $box_width + 3, $pdf->GetY() - 11);
+        $pdf->SetXY($start_x + ($box_width + $spacing), $pdf->GetY() - 9);
         $pdf->Cell($box_width, $box_height, '', 1, 0, 'C', true);
-        $pdf->SetXY($start_x + $box_width + 3, $pdf->GetY() + 3);
-        $pdf->SetFont('helvetica', 'B', 16);
-        $pdf->Cell($box_width, 8, $rekap->total_izin ?: 0, 0, 0, 'C');
-        $pdf->SetXY($start_x + $box_width + 3, $pdf->GetY() + 8);
-        $pdf->SetFont('helvetica', '', 8);
+        $pdf->SetXY($start_x + ($box_width + $spacing), $pdf->GetY() + 2);
+        $pdf->SetFont('helvetica', 'B', 14);
+        $pdf->Cell($box_width, 7, $rekap->total_izin ?: 0, 0, 0, 'C');
+        $pdf->SetXY($start_x + ($box_width + $spacing), $pdf->GetY() + 7);
+        $pdf->SetFont('helvetica', '', 7);
         $pdf->Cell($box_width, 5, 'IZIN', 0, 0, 'C');
-        
-        // Alpha - Red
-        $pdf->SetFillColor(231, 76, 60);
-        $pdf->SetXY($start_x + ($box_width + 3) * 2, $pdf->GetY() - 11);
+
+        // Sakit
+        $pdf->SetFillColor(22, 160, 133);
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 2, $pdf->GetY() - 9);
         $pdf->Cell($box_width, $box_height, '', 1, 0, 'C', true);
-        $pdf->SetXY($start_x + ($box_width + 3) * 2, $pdf->GetY() + 3);
-        $pdf->SetFont('helvetica', 'B', 16);
-        $pdf->Cell($box_width, 8, $rekap->total_alpha ?: 0, 0, 0, 'C');
-        $pdf->SetXY($start_x + ($box_width + 3) * 2, $pdf->GetY() + 8);
-        $pdf->SetFont('helvetica', '', 8);
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 2, $pdf->GetY() + 2);
+        $pdf->SetFont('helvetica', 'B', 14);
+        $pdf->Cell($box_width, 7, $rekap->total_sakit ?: 0, 0, 0, 'C');
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 2, $pdf->GetY() + 7);
+        $pdf->SetFont('helvetica', '', 7);
+        $pdf->Cell($box_width, 5, 'SAKIT', 0, 0, 'C');
+        
+        // Alpha
+        $pdf->SetFillColor(231, 76, 60);
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 3, $pdf->GetY() - 9);
+        $pdf->Cell($box_width, $box_height, '', 1, 0, 'C', true);
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 3, $pdf->GetY() + 2);
+        $pdf->SetFont('helvetica', 'B', 14);
+        $pdf->Cell($box_width, 7, $rekap->total_alpha ?: 0, 0, 0, 'C');
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 3, $pdf->GetY() + 7);
+        $pdf->SetFont('helvetica', '', 7);
         $pdf->Cell($box_width, 5, 'ALPHA', 0, 0, 'C');
         
-        // Total - Blue
+        // Total Hari
         $pdf->SetFillColor(52, 152, 219);
-        $pdf->SetXY($start_x + ($box_width + 3) * 3, $pdf->GetY() - 11);
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 4, $pdf->GetY() - 9);
         $pdf->Cell($box_width, $box_height, '', 1, 0, 'C', true);
-        $pdf->SetXY($start_x + ($box_width + 3) * 3, $pdf->GetY() + 3);
-        $pdf->SetFont('helvetica', 'B', 16);
-        $pdf->Cell($box_width, 8, $rekap->total_hari ?: 0, 0, 0, 'C');
-        $pdf->SetXY($start_x + ($box_width + 3) * 3, $pdf->GetY() + 8);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell($box_width, 5, 'TOTAL', 0, 0, 'C');
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 4, $pdf->GetY() + 2);
+        $pdf->SetFont('helvetica', 'B', 14);
+        $pdf->Cell($box_width, 7, $rekap->total_hari ?: 0, 0, 0, 'C');
+        $pdf->SetXY($start_x + ($box_width + $spacing) * 4, $pdf->GetY() + 7);
+        $pdf->SetFont('helvetica', '', 7);
+        $pdf->Cell($box_width, 5, 'TOTAL HARI', 0, 0, 'C');
         
         $pdf->SetTextColor(0, 0, 0);
-        $pdf->Ln(15);
+        $pdf->Ln(12);
         
-        // Table header
+        // Table Header
         $pdf->SetFont('helvetica', 'B', 9);
         $pdf->SetFillColor(44, 62, 80);
         $pdf->SetTextColor(255, 255, 255);
-        $pdf->Cell(15, 8, 'No', 1, 0, 'C', true);
-        $pdf->Cell(35, 8, 'Tanggal', 1, 0, 'C', true);
-        $pdf->Cell(30, 8, 'Hari', 1, 0, 'C', true);
-        $pdf->Cell(30, 8, 'Status', 1, 0, 'C', true);
-        $pdf->Cell(70, 8, 'Keterangan', 1, 1, 'C', true);
+        $pdf->Cell(10, 8, 'No', 1, 0, 'C', true);
+        $pdf->Cell(25, 8, 'Tanggal', 1, 0, 'C', true);
+        $pdf->Cell(20, 8, 'Hari', 1, 0, 'C', true);
+        $pdf->Cell(45, 8, 'Guru Pengajar', 1, 0, 'C', true);
+        $pdf->Cell(15, 8, 'Durasi', 1, 0, 'C', true);
+        $pdf->Cell(20, 8, 'Status', 1, 0, 'C', true);
+        $pdf->Cell(45, 8, 'Keterangan', 1, 1, 'C', true);
         
-        // Table body
+        // Table Body
         $pdf->SetTextColor(0, 0, 0);
         $pdf->SetFont('helvetica', '', 9);
         $hari = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
@@ -616,23 +746,55 @@ class Siswa extends CI_Controller
             foreach ($absensi as $a) {
                 $day_num = date('w', strtotime($a->tanggal));
                 $pdf->SetFillColor($fill ? 249 : 255, $fill ? 249 : 255, $fill ? 249 : 255);
-                $pdf->Cell(15, 7, $no++, 1, 0, 'C', true);
-                $pdf->Cell(35, 7, date('d/m/Y', strtotime($a->tanggal)), 1, 0, 'C', true);
-                $pdf->Cell(30, 7, $hari[$day_num], 1, 0, 'C', true);
-                $pdf->Cell(30, 7, $a->status_hadir, 1, 0, 'C', true);
-                $pdf->Cell(70, 7, $a->keterangan ?: '-', 1, 1, 'L', true);
+                
+                $pdf->Cell(10, 7, $no++, 1, 0, 'C', true);
+                $pdf->Cell(25, 7, date('d/m/Y', strtotime($a->tanggal)), 1, 0, 'C', true);
+                $pdf->Cell(20, 7, $hari[$day_num], 1, 0, 'C', true);
+                $pdf->Cell(45, 7, $a->nama_guru ?: '-', 1, 0, 'L', true);
+                $pdf->Cell(15, 7, ($a->jumlah_sesi ?: 1) . ' Sesi', 1, 0, 'C', true);
+                $pdf->Cell(20, 7, $a->status_hadir, 1, 0, 'C', true);
+                $pdf->Cell(45, 7, $a->keterangan ?: '-', 1, 1, 'L', true);
                 $fill = !$fill;
             }
         }
         
-        $pdf->Ln(10);
+        $pdf->Ln(8);
         $pdf->SetFont('helvetica', '', 8);
         $pdf->SetTextColor(128, 128, 128);
-        $pdf->Cell(0, 5, 'Dicetak pada: ' . date('d/m/Y H:i:s'), 0, 1, 'L');
+        $pdf->Cell(0, 5, 'Dicetak pada: ' . date('d/m/Y H:i:s') . ' oleh Sistem ' . $apk[0]->nama_apk, 0, 1, 'L');
         
         // Output PDF
-        $filename = 'Absensi_' . preg_replace('/[^A-Za-z0-9]/', '_', $siswa->nama_anak) . '_' . date('Ymd') . '.pdf';
+        $filename = 'Laporan_Absensi_' . preg_replace('/[^A-Za-z0-9]/', '_', $siswa->nama_anak) . '_' . date('Ymd') . '.pdf';
         $pdf->Output($filename, 'D');
+    }
+
+    /** Returns $value as Y-m-d when it is a real calendar date, otherwise null. */
+    private function parse_tanggal($value)
+    {
+        $value = (string) $value;
+        $tgl = DateTime::createFromFormat('!Y-m-d', $value);
+        return ($tgl && $tgl->format('Y-m-d') === $value) ? $value : null;
+    }
+
+    /** Sums the 'Hadir' sessions in $absensi per month, keyed 'Y-m'. */
+    private function sesi_hadir_per_bulan($absensi)
+    {
+        $per_bulan = array();
+        foreach ($absensi as $a) {
+            if ($a->status_hadir === 'Hadir') {
+                $bulan = substr($a->tanggal, 0, 7);
+                $per_bulan[$bulan] = ($per_bulan[$bulan] ?? 0) + (int) $a->jumlah_sesi;
+            }
+        }
+        return $per_bulan;
+    }
+
+    /** Quota label and its RGB colour for a month's session total. */
+    private function status_kuota($total_sesi)
+    {
+        return ($total_sesi >= self::MAX_SESI_PER_BULAN)
+            ? array('LENGKAP', array(39, 174, 96))
+            : array('BELUM LENGKAP', array(230, 126, 34));
     }
 
     // =============================================
