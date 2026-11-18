@@ -52,7 +52,9 @@ also has a `REVISION` file with the full sha.
 5. **Migrates**: `php index.php migrate` in the new release.
 6. **Switches** `current` to the new release, atomically (`ln -s` + `mv -T`).
 7. **Checks Health**: `https://<domain>/index.php/Health` must say
-   `"status":"ok"` and the release's `VERSION`. It tries 6 times, 5 s apart.
+   `"status":"ok"`, the release's `VERSION` and its `REVISION` (full commit
+   sha). That shows the new release is what the site actually serves, not an
+   older folder or a cached page. It tries 6 times, 5 s apart.
 8. **Turns maintenance off**, then removes old releases and backups.
 
 If any step after 3 fails, it **rolls back**:
@@ -177,6 +179,22 @@ rm public_html && mv ~/sites/dev/public_html.pre-deploy public_html
 
 Then turn Hostinger's auto-deploy back on and remove the key's line from
 `~/.ssh/authorized_keys`.
+
+## Failure drills (DEV)
+
+Run each from Actions > Deploy > Run workflow with a throwaway branch as
+`ref`, then delete the branch. Each must end with a red run and result
+`rolled-back` in the summary, the previous release live
+(`readlink ~/sites/dev/current`), Health `"status":"ok"` and maintenance off.
+
+| Drill | Throwaway branch | Also expect |
+| --- | --- | --- |
+| Broken migration | adds a migration that changes data, then runs invalid SQL | the database as before the deploy (data and migration version) |
+| Failed health check | changes `Health.php` so `revision` is wrong, e.g. `'revision' => str_repeat('0', 40),` | deploy.log shows Health answered with the wrong revision |
+
+A branch that only writes a different `REVISION` file doesn't make the
+health check fail: Health reads that same file from the release it serves,
+so the two always agree. Use a broken Health instead, as above.
 
 ## Tests
 

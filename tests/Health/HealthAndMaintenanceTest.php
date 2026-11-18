@@ -48,6 +48,12 @@ final class HealthAndMaintenanceTest extends TestCase
         $this->assertSame('ok', $body['database']);
         $this->assertSame('ok', $body['migrations']);
         $this->assertSame(trim((string) file_get_contents(__DIR__ . '/../../VERSION')), $body['version']);
+        $revisionFile = __DIR__ . '/../../REVISION';
+        $this->assertSame(
+            is_file($revisionFile) ? trim((string) file_get_contents($revisionFile)) : 'unknown',
+            $body['revision'],
+            'revision comes from the REVISION file the deploy build writes, "unknown" without it.'
+        );
         $this->assertSame(PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION, $body['php']);
         $this->assertMatchesRegularExpression('/^\d{14}$/', (string) $body['db_version']);
         $this->assertFalse($body['maintenance']);

@@ -9,8 +9,12 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * It still answers while maintenance mode is on (see index.php).
  *
  * Answers JSON, HTTP 200 when everything is fine, 503 otherwise:
- *   {"status":"ok","version":"1.1.1","php":"8.3","database":"ok",
- *    "migrations":"ok","db_version":"20261028000000","maintenance":false}
+ *   {"status":"ok","version":"1.1.1","revision":"<commit sha>","php":"8.3",
+ *    "database":"ok","migrations":"ok","db_version":"20261028000000",
+ *    "maintenance":false}
+ *
+ * "revision" is the full commit sha from the REVISION file the deploy's
+ * build writes next to index.php ("unknown" without it, e.g. locally).
  *
  * "migrations" is "pending" when the code has a migration the database
  * hasn't run yet. Nothing here reveals credentials or error details.
@@ -32,6 +36,7 @@ class Health extends CI_Controller
         $result = array(
             'status' => 'ok',
             'version' => $this->app_version(),
+            'revision' => $this->app_revision(),
             'php' => PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION,
             'database' => 'error',
             'migrations' => 'unknown',
@@ -74,6 +79,13 @@ class Health extends CI_Controller
     {
         $file = FCPATH . 'VERSION';
         return is_file($file) ? trim((string) file_get_contents($file)) : 'unknown';
+    }
+
+    private function app_revision()
+    {
+        $file = FCPATH . 'REVISION';
+        $revision = is_file($file) ? trim((string) file_get_contents($file)) : '';
+        return $revision !== '' ? $revision : 'unknown';
     }
 
     /* Newest migration timestamp in the code, e.g. "20261028000000". */

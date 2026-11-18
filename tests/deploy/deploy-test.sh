@@ -157,6 +157,13 @@ EOF
 variant first-broken 29991231000002_first_broken.php
 variant probe 29991231000000_deploy_probe.php
 variant broken 29991231000000_deploy_probe.php 29991231000001_deploy_broken.php
+# Same code as "probe", but its Health reports another commit than the one
+# deployed, as if the web server still served another release.
+variant wrong-revision 29991231000000_deploy_probe.php
+sed -i "s/'revision' => \$this->app_revision(),/'revision' => str_repeat('0', 40),/" \
+    "$WORK/variant-wrong-revision/application/controllers/Health.php"
+grep -q "str_repeat('0', 40)" "$WORK/variant-wrong-revision/application/controllers/Health.php"
+tar -czf "$WORK/wrong-revision.tar.gz" -C "$WORK/variant-wrong-revision" .
 
 ALL_OUTPUT="$WORK/all-output.txt"
 deploy() { # <release-id> <tarball> -> $rc, $out
@@ -200,6 +207,8 @@ check "the old folder is kept as public_html.pre-deploy" '[ "$(cat "$SITE_DIR/pu
 check "the release links the shared .htaccess and uploads" '[ "$(readlink "$SITE_DIR/releases/r1/.htaccess")" = "$SITE_DIR/shared/.htaccess" ] && [ "$(readlink "$SITE_DIR/releases/r1/uploads")" = "$SITE_DIR/shared/uploads" ]'
 check "REVISION holds the commit" '[ "$(cat "$SITE_DIR/releases/r1/REVISION")" = "$(git -C "$REPO" rev-parse HEAD)" ]'
 check "Health is ok with the release's version" 'health_ok'
+check "Health shows the deployed commit as revision" 'health | grep -q "\"revision\":\"$(git -C "$REPO" rev-parse HEAD)\""'
+check "the log shows the revision Health answered" 'grep -q "f. Health ok .*revision=.$(git -C "$REPO" rev-parse HEAD)" "$SITE_DIR/logs/deploy.log"'
 check "Health was checked while maintenance was on" 'grep -q '\''f. Health ok .*maintenance=true'\'' "$SITE_DIR/logs/deploy.log"'
 check "the site answers normally (not 503)" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 200 ]'
 check "maintenance is off" '[ ! -e "$MAINT" ]'
@@ -250,6 +259,17 @@ check "the failed release folder is removed" '[ ! -e "$SITE_DIR/releases/r4" ]'
 check "the data is as before" '[ "$(sql '\''SELECT note FROM deploy_probe WHERE id = 1'\'')" = kept ]'
 check "maintenance is off" '[ ! -e "$MAINT" ]'
 
+echo
+echo "5b. Deploy whose Health reports another revision"
+TRIES=2 deploy r4b "$WORK/wrong-revision.tar.gz"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rolled-back" 'result_is r4b rolled-back'
+check "says which revision it wanted" 'grep -q "want version .*, revision .$(git -C "$REPO" rev-parse HEAD)" <<< "$out"'
+check "current points back to releases/r2" '[ "$(live_release)" = releases/r2 ]'
+check "the failed release folder is removed" '[ ! -e "$SITE_DIR/releases/r4b" ]'
+check "maintenance is off" '[ ! -e "$MAINT" ]'
+check "Health is ok again" 'health_ok'
+
 # --------------------------------------------------------------- 6. refusals
 echo
 echo "6. Refusals that change nothing"
@@ -276,6 +296,10 @@ wait "$lock_pid"
 printf 'not a tarball' > "$WORK/junk.tar.gz"
 deploy r5 "$WORK/junk.tar.gz"
 check "a broken tarball is refused" '[ "$rc" -ne 0 ] && result_is r5 failed'
+mkdir -p "$WORK/no-revision" && tar -xzf "$WORK/base.tar.gz" -C "$WORK/no-revision" && rm "$WORK/no-revision/REVISION"
+tar -czf "$WORK/no-revision.tar.gz" -C "$WORK/no-revision" .
+deploy r5 "$WORK/no-revision.tar.gz"
+check "a release without REVISION is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "The release has no REVISION" <<< "$out"'
 check "...and nothing was left behind" '[ ! -e "$SITE_DIR/releases/r5" ] && [ -z "$(find "$SITE_DIR/releases" -maxdepth 1 -name '\''.incoming-*'\'')" ]'
 check "no backups were made by refused deploys" '[ "$(backup_count)" = "$backups_before" ]'
 check "r2 is still live" '[ "$(live_release)" = releases/r2 ] && health_ok'
@@ -294,7 +318,7 @@ echo
 echo "8. No secrets left or logged"
 check "the password is in no log or output" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT"'
 check "no temporary option, health or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 -name '\''.db-options.*'\'' -o -maxdepth 2 -name '\''.health.*'\'' -o -maxdepth 2 -name '\''.incoming-*'\'')" ]'
-check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 11 ]'
+check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 12 ]'
 
 echo
 echo "$pass passed, $fail failed"

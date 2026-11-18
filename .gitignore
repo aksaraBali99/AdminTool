@@ -49,3 +49,6 @@ e2e/node_modules/
 e2e/test-results/
 e2e/playwright-report/
 e2e/.cache/
+
+# Written into release builds by deploy/build-release.sh; never commit one.
+/REVISION

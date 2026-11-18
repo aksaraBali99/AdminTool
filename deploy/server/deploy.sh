@@ -17,7 +17,8 @@
 #   c. database backup to ~/backups/<site>/pre-deploy-<UTC time>-<id>.sql.gz
 #   d. php index.php migrate in the new release
 #   e. "current" -> releases/<id>, switched atomically
-#   f. Health must answer "status":"ok" and the release's VERSION
+#   f. Health must answer "status":"ok", the release's VERSION and its
+#      REVISION (full commit sha), i.e. the new release is what is served
 #   g. maintenance off; keep the newest 3 releases and 5 pre-deploy backups
 #   h. on any failure after (b): restore the database if migrations started,
 #      put the previous release back, maintenance off, exit non-zero
@@ -296,7 +297,7 @@ STEP=unpack
 INCOMING="$(mktemp -d "$RELEASES/.incoming-XXXXXX")"
 tar -xzf - -C "$INCOMING" --no-same-owner
 chmod 755 "$INCOMING"
-for f in index.php VERSION application/config/config.php system/core/CodeIgniter.php; do
+for f in index.php VERSION REVISION application/config/config.php system/core/CodeIgniter.php; do
     [ -f "$INCOMING/$f" ] || die "The release has no $f"
 done
 for f in .htaccess uploads maintenance.on .git; do
@@ -309,7 +310,8 @@ touch "$REL"
 ln -s "$SHARED/.htaccess" "$REL/.htaccess"
 ln -s "$SHARED/uploads" "$REL/uploads"
 VERSION="$(tr -d '[:space:]' < "$REL/VERSION")"
-if [ -f "$REL/REVISION" ]; then SHA="$(tr -dc '0-9a-f' < "$REL/REVISION" | cut -c1-40)"; fi
+SHA="$(tr -d '[:space:]' < "$REL/REVISION")"
+[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { SHA="-"; die "REVISION is not a full commit sha"; }
 say "a. Unpacked release $RELEASE (version $VERSION, commit $SHA)"
 
 # ---------------------------------------------------------------- b. maintenance on
@@ -385,14 +387,16 @@ for ((i = 1; i <= HEALTH_TRIES; i++)); do
         if (!is_array($j)) { echo "no Health JSON in the answer"; exit(1); }
         $s = function ($k) use ($j) { return isset($j[$k]) ? var_export($j[$k], true) : "missing"; };
         echo "status=", $s("status"), " version=", $s("version"), " database=", $s("database"),
-             " migrations=", $s("migrations"), " maintenance=", $s("maintenance");
-        exit(($j["status"] ?? null) === "ok" && ($j["version"] ?? null) === $argv[1] ? 0 : 1);
-    ' -- "$VERSION" < "$TMP_BODY" 2>/dev/null)"; then
+             " migrations=", $s("migrations"), " maintenance=", $s("maintenance"),
+             " revision=", $s("revision");
+        exit(($j["status"] ?? null) === "ok" && ($j["version"] ?? null) === $argv[1]
+            && ($j["revision"] ?? null) === $argv[2] ? 0 : 1);
+    ' -- "$VERSION" "$SHA" < "$TMP_BODY" 2>/dev/null)"; then
         healthy=1
         say "f. Health ok (HTTP $code, $verdict)"
         break
     fi
-    say "f. Health attempt $i/$HEALTH_TRIES not ok (HTTP $code, ${verdict:-no answer}; want version '$VERSION')"
+    say "f. Health attempt $i/$HEALTH_TRIES not ok (HTTP $code, ${verdict:-no answer}; want version '$VERSION', revision '$SHA')"
     if [ "$i" -lt "$HEALTH_TRIES" ]; then sleep "$HEALTH_WAIT"; fi
 done
 [ "$healthy" = 1 ] || die "Health check failed"
