@@ -2,7 +2,7 @@
 # The only command the GitHub deploy key may run. It is installed as
 #   ~/sites/bin/gate.sh
 # and forced for that key in ~/.ssh/authorized_keys:
-#   command="/home/<user>/sites/bin/gate.sh",restrict ssh-ed25519 AAAA... github-deploy
+#   command="/home/<user>/sites/bin/gate.sh",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-dev
 #
 # sshd puts what the client asked to run in $SSH_ORIGINAL_COMMAND. The only
 # accepted form is exactly

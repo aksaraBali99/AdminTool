@@ -120,7 +120,7 @@ Example for `dev`. `<user>` is the SSH user (`u738067934`).
    through hPanel), on one line:
 
    ```
-   command="/home/<user>/sites/bin/gate.sh",restrict ssh-ed25519 AAAA... github-deploy-dev
+   command="/home/<user>/sites/bin/gate.sh",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-dev
    ```
 
    `restrict` turns off port forwarding, agent forwarding, X11 and the TTY.
@@ -137,15 +137,27 @@ Example for `dev`. `<user>` is the SSH user (`u738067934`).
    | `DEPLOY_USER` | `<user>` |
    | `DEPLOY_KNOWN_HOSTS` | the server's host key line, e.g. from `ssh-keygen -F '[145.79.14.215]:65002'` on a machine that already trusts it |
 
-   Then Settings > Secrets and variables > Actions > Variables:
-   `DEPLOY_DEV_ENABLED` = `true`. The workflow does nothing until then, and
-   setting it to anything else switches the deploy off.
+   In the environment's **Deployment branches and tags**, allow only `main`.
+   Manual runs then always use the workflow file from `main`; the code to
+   deploy is chosen with the `ref` input.
 
 5. Turn off Hostinger's Git auto-deploy for the site **before** the first
    deploy. Otherwise Hostinger would write into the release folder through
    the `public_html` link.
 
-6. First deploy: Actions > Deploy > Run workflow, ref `main`.
+6. First deploy: Actions > Deploy > Run workflow, "Use workflow from"
+   `main`, ref `main`. Manual runs work without any further setting.
+
+7. Automatic deploys (after Tests passes for a push to `main`) stay off
+   until Settings > Secrets and variables > Actions > Variables has
+   `DEPLOY_DEV_ENABLED` = `true`. Set it only after the first deploy and
+   the failure drills pass. Setting it to anything other than `true` (GitHub
+   ignores upper/lower case, so `True` counts as `true`), or deleting it,
+   switches automatic deploys off again; manual runs keep working.
+
+   To stop all deploys, manual ones included: Actions > Deploy > ⋯ >
+   Disable workflow. Or, on the server, remove the key's line from
+   `~/.ssh/authorized_keys`.
 
 ## Logs
 
