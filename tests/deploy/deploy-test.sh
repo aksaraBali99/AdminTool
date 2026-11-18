@@ -133,7 +133,7 @@ for _ in $(seq 1 50); do
     curl -s -o /dev/null "$SITE_URL/" && break
     sleep 0.1
 done
-echo "Test site: $(grep -m1 -o '[sapi=.*]' "$WORK/server.log" || echo "no router line")"
+echo "Test site: $(grep -m1 -o 'sapi=[^]]*' "$WORK/server.log" || echo "no router line")"
 
 # --------------------------------------------------------------- releases
 echo "Building release tarballs"
