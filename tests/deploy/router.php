@@ -5,6 +5,10 @@
  * Serves whatever the fake site's public_html points to at the moment of
  * each request (the server runs with realpath_cache_size=0), the way the
  * real web server follows the public_html -> current -> releases/<id> links.
+ *
+ * Each request is logged to the server's log (shown by the test when a
+ * check fails): the folder it was served from, the HTTP status and the
+ * start of the answer. Test data only, never real secrets.
  */
 $docroot = getenv('DEPLOY_TEST_DOCROOT');
 clearstatcache(true);
@@ -12,6 +16,19 @@ clearstatcache(true);
 $_SERVER['CI_ENV'] = 'testing';
 $_SERVER['SCRIPT_NAME'] = '/index.php';
 $_SERVER['SCRIPT_FILENAME'] = $docroot . '/index.php';
+
+$served_from = realpath($docroot);
+$uri = $_SERVER['REQUEST_URI'] ?? '';
+ob_start(function ($body, $phase) use ($served_from, $uri) {
+    static $logged = false;
+    if (!$logged) {
+        $logged = true;
+        $start = preg_replace('/[^\x20-\x7e]+/', ' ', substr($body, 0, 160));
+        error_log(sprintf('router: %s from %s -> HTTP %d: %s',
+            $uri, $served_from, http_response_code(), $start));
+    }
+    return $body;
+});
 
 chdir($docroot);
 require $docroot . '/index.php';
