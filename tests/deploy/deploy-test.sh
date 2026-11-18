@@ -58,6 +58,32 @@ check() { # <description> '<shell expression>'
         pass=$((pass + 1)); echo "ok   - $description"
     else
         fail=$((fail + 1)); echo "FAIL - $description"
+        show_last_deploy
+    fi
+}
+
+# On the first failed check after a deploy: what that deploy printed and what
+# the fake web server logged meanwhile, so a failure explains itself in CI.
+# (Never holds secrets: section 8 checks the password is in no output.)
+LAST_DEPLOY="" SHOWN=1 SERVER_LOG_FROM=1
+show_last_deploy() {
+    [ "$SHOWN" = 0 ] || return 0
+    SHOWN=1
+    echo "    --- output of deploy $LAST_DEPLOY (exit $rc)"
+    printf '%s\n' "$out" | sed 's/^/    | /'
+    echo "    --- web server log during that deploy (last 40 lines)"
+    tail -n +"$SERVER_LOG_FROM" "$WORK/server.log" 2>/dev/null | tail -n 40 | sed 's/^/    | /'
+    echo "    ---"
+}
+
+# Setup steps between sections: a failure is counted and shown, but doesn't
+# stop the script (set -e), so the later sections still run and report.
+prep() { # <description> <command>...
+    local description="$1"
+    shift
+    if ! "$@"; then
+        fail=$((fail + 1)); echo "FAIL - setup: $description"
+        show_last_deploy
     fi
 }
 
@@ -176,6 +202,8 @@ tar -czf "$WORK/wrong-revision.tar.gz" -C "$WORK/variant-wrong-revision" .
 
 ALL_OUTPUT="$WORK/all-output.txt"
 deploy() { # <release-id> <tarball> -> $rc, $out
+    LAST_DEPLOY="$1" SHOWN=0
+    SERVER_LOG_FROM="$(( $(wc -l < "$WORK/server.log") + 1 ))"
     set +e
     out="$(DEPLOY_ROOT="$ROOT" DEPLOY_PHP="$PHP_BIN" DEPLOY_HEALTH_TRIES="${TRIES:-3}" DEPLOY_HEALTH_WAIT=1 \
         DEPLOY_SETTLE_SECONDS=0 "$BIN/deploy.sh" dev "$1" < "$2" 2>&1)"
@@ -241,7 +269,7 @@ check "Health is ok" 'health_ok'
 # --------------------------------------------------------------- 4. broken migration
 echo
 echo "4. Deploy with a broken migration"
-sql "UPDATE deploy_probe SET note = 'before' WHERE id = 1"
+prep "set deploy_probe.note to 'before'" sql "UPDATE deploy_probe SET note = 'before' WHERE id = 1"
 deploy r3 "$WORK/broken.tar.gz"
 check "exits non-zero" '[ "$rc" -ne 0 ]'
 check "reports rolled-back" 'result_is r3 rolled-back'
@@ -260,7 +288,7 @@ echo
 echo "5. Deploy whose health check fails"
 cp "$SITE_CONF" "$WORK/site.conf.good"
 printf 'domain=dev.test\nhealth_url=http://127.0.0.1:9/index.php/Health\n' > "$SITE_CONF"
-sql "UPDATE deploy_probe SET note = 'kept' WHERE id = 1"
+prep "set deploy_probe.note to 'kept'" sql "UPDATE deploy_probe SET note = 'kept' WHERE id = 1"
 TRIES=2 deploy r4 "$WORK/probe.tar.gz"
 cp "$WORK/site.conf.good" "$SITE_CONF"
 check "exits non-zero" '[ "$rc" -ne 0 ]'
