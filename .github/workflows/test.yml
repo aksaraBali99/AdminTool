@@ -129,3 +129,36 @@ jobs:
           name: playwright-traces
           path: e2e/test-results/
           retention-days: 7
+
+  deploy-scripts:
+    # deploy/server/gate.sh and deploy.sh (the SSH deploy, see
+    # deploy/server/README.md): argument checks, and real deploys, rollbacks
+    # and refusals against a scratch database and a php -S site.
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, curl, mysqli
+          coverage: none
+
+      - name: gate.sh accepts only "deploy <site> <release-id>"
+        run: bash tests/deploy/gate-test.sh
+
+      - name: deploy.sh deploys, rolls back and refuses correctly
+        run: bash tests/deploy/deploy-test.sh

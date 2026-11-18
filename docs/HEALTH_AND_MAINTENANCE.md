@@ -10,14 +10,15 @@ every site (DEV and both PROD sites) without any extra setup.
 Public, no login, read-only. It answers JSON:
 
 ```json
-{"status":"ok","version":"1.1.1","php":"8.3","database":"ok",
- "migrations":"ok","db_version":"20261028000000","maintenance":false}
+{"status":"ok","version":"1.1.1","revision":"9b970e3...(40 characters)","php":"8.3",
+ "database":"ok","migrations":"ok","db_version":"20261028000000","maintenance":false}
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `status` | `ok` (HTTP 200) when the database answers and no migration is pending, otherwise `error` (HTTP 503) |
 | `version` | The `VERSION` file of the code that is live |
+| `revision` | The full commit sha of the code that is live, from the `REVISION` file the deploy's build writes next to `index.php`; `unknown` where there is no such file (local and CI runs) |
 | `php` | PHP version the site runs (all sites should show `8.3`) |
 | `database` | `ok` if the database answers, otherwise `error` |
 | `migrations` | `ok`, or `pending` when the code has a migration the database has not run yet |
@@ -30,7 +31,8 @@ error page for its own request). Anything that checks it should look for
 `"status":"ok"` in the body, not only HTTP 200: with `CI_ENV=development`
 on PHP 8.2+, CodeIgniter 3's own deprecation notices are printed before
 the JSON, which stops the 503 status from being sent. The deploy checks it before
-taking the maintenance page down. An uptime monitor can also watch it for
+taking the maintenance page down, and requires `version` and `revision` to
+be the new release's, so it knows the new release is what the site serves. An uptime monitor can also watch it for
 the word `"status":"ok"`.
 
 ## Maintenance mode
