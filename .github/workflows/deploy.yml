@@ -1,0 +1,124 @@
+name: Deploy
+
+# Deploys to DEV (admin-dev.englishhubbali.com) over SSH. See
+# deploy/server/README.md for how the server side works and is set up.
+#   - Automatically, after the "Tests" workflow passes for a push to main
+#     (the exact commit that was tested is deployed).
+#   - By hand: Actions > Deploy > Run workflow, with any branch, tag or sha
+#     (used for test drills).
+# Nothing runs until the repository variable DEPLOY_DEV_ENABLED is "true"
+# (Settings > Secrets and variables > Actions > Variables), so the deploy can
+# be switched off without editing this file.
+#
+# PROD sites still use Hostinger's Git deploy.
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to deploy to DEV
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-dev:
+    name: Deploy to DEV
+    if: >-
+      vars.DEPLOY_DEV_ENABLED == 'true' && (
+        github.event_name == 'workflow_dispatch' || (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: dev
+    # One DEV deploy at a time; a running deploy is never cancelled.
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out the code to deploy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
+
+      - name: Build the release
+        id: build
+        run: |
+          set -euo pipefail
+          bash deploy/build-release.sh HEAD "$RUNNER_TEMP/release.tar.gz"
+          echo "release_id=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy over SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          RELEASE_ID: ${{ steps.build.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_SSH_KEY DEPLOY_HOST DEPLOY_PORT DEPLOY_USER DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set in the 'dev' environment."
+              exit 1
+            fi
+          done
+
+          ssh_dir="$RUNNER_TEMP/ssh"
+          install -m 700 -d "$ssh_dir"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+
+          # The host key is pinned (DEPLOY_KNOWN_HOSTS): an unknown or
+          # changed key stops the deploy. The server side only accepts
+          # "deploy <site> <release-id>" from this key (gate.sh).
+          ssh -i "$ssh_dir/key" -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy dev $RELEASE_ID" \
+            < "$RUNNER_TEMP/release.tar.gz" 2>&1 | tee "$RUNNER_TEMP/deploy-output.txt"
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"
+
+      - name: Job summary
+        if: always() && steps.build.outcome == 'success'
+        env:
+          RELEASE_ID: ${{ steps.build.outputs.release_id }}
+          SHA: ${{ steps.build.outputs.sha }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          set -uo pipefail
+          line="$(grep '^RESULT ' "$RUNNER_TEMP/deploy-output.txt" 2>/dev/null | tail -n1)"
+          field() { printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+          result="$(field result)"; backup="$(field backup)"
+          case "$result" in
+            success) shown="✅ deployed" ;;
+            rolled-back) shown="↩️ failed, rolled back (previous release live)" ;;
+            rollback-incomplete) shown="🛑 failed, rollback incomplete: maintenance left on, see deploy/server/README.md" ;;
+            failed) shown="❌ failed before anything changed" ;;
+            *) shown="❌ no result from the server (see the Deploy step's log)" ;;
+          esac
+          {
+            echo "### Deploy to DEV"
+            echo
+            echo "| Site | Version | Commit | Release | Backup | Result |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            echo "| dev (admin-dev.englishhubbali.com) | $VERSION | \`${SHA:0:12}\` | \`$RELEASE_ID\` | ${backup:+\`$backup\`} | $shown |"
+            echo
+            echo "Server logs: \`~/sites/dev/logs/deploy.log\` and \`~/sites/dev/logs/history.log\`."
+          } >> "$GITHUB_STEP_SUMMARY"

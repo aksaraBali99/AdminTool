@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# Integration test for deploy/server/deploy.sh: real deploys, rollbacks and
+# refusals against a scratch database and a fake site served by `php -S`.
+# Linux only (GNU tools, flock); runs in CI (job "deploy-scripts" in
+# .github/workflows/test.yml):
+#
+#   TEST_DB_PASS=... bash tests/deploy/deploy-test.sh
+#
+# Needs php, mysql, mysqldump, curl, flock and a MySQL account that may
+# create databases and users (TEST_DB_HOST/PORT/USER/PASS, as for
+# tests/run-tests.sh). It creates and drops its own database
+# (admintool_deploy_test) and user (deploy_test); nothing else is touched.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PHP_BIN="${PHP_BIN:-php}"
+TEST_DB_HOST="${TEST_DB_HOST:-127.0.0.1}"
+TEST_DB_PORT="${TEST_DB_PORT:-3306}"
+TEST_DB_USER="${TEST_DB_USER:-root}"
+: "${TEST_DB_PASS:?TEST_DB_PASS is not set}"
+
+DB=admintool_deploy_test
+DB_USER=deploy_test
+# Spaces, #, $ and a backslash: checks the option file's quoting.
+DB_PASS='Dep$loy p@ss#1\x'
+PORT=8095
+SITE_URL="http://127.0.0.1:$PORT"
+
+WORK="$(mktemp -d)"
+ROOT="$WORK/home"
+SITE_DIR="$ROOT/sites/dev"
+PUBLIC_HTML="$ROOT/domains/dev.test/public_html"
+MAINT="$SITE_DIR/shared/maintenance.on"
+SERVER_PID=""
+
+admin_sql() {
+    MYSQL_PWD="$TEST_DB_PASS" mysql -h"$TEST_DB_HOST" -P"$TEST_DB_PORT" -u"$TEST_DB_USER" -N -B "$@"
+}
+sql() { admin_sql "$DB" -e "$1"; }
+
+cleanup() {
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+    admin_sql -e "DROP DATABASE IF EXISTS $DB; DROP USER IF EXISTS '$DB_USER'@'%'" 2>/dev/null
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+pass=0
+fail=0
+check() { # <description> '<shell expression>'
+    local description="$1"
+    if eval "$2"; then
+        pass=$((pass + 1)); echo "ok   - $description"
+    else
+        fail=$((fail + 1)); echo "FAIL - $description"
+    fi
+}
+
+# --------------------------------------------------------------- the fake server
+echo "Setting up a fake site in $ROOT"
+mkdir -p "$SITE_DIR"/{releases,shared/uploads/logo,shared/uploads/karyawan,logs} \
+    "$ROOT/backups/dev" "$PUBLIC_HTML"
+echo '<?php echo "OLD SITE";' > "$PUBLIC_HTML/index.php"
+printf 'domain=dev.test\nhealth_url=%s/index.php/Health\n' "$SITE_URL" > "$SITE_DIR/site.conf"
+cat > "$SITE_DIR/shared/.htaccess" <<EOF
+# Like a real site's .htaccess: settings inside a block, a commented-out line.
+<IfModule mod_env.c>
+    SetEnv DB_HOST $TEST_DB_HOST
+    SetEnv DB_PORT $TEST_DB_PORT
+    SetEnv DB_USER $DB_USER
+    # SetEnv DB_PASS not-this-one
+    SetEnv DB_PASS "$DB_PASS"
+    SetEnv DB_NAME $DB
+    SetEnv CI_ENV testing
+    SetEnv MAINTENANCE_FILE $MAINT
+</IfModule>
+EOF
+
+sql_escaped_pass="$(printf '%s' "$DB_PASS" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")"
+admin_sql -e "DROP DATABASE IF EXISTS $DB; CREATE DATABASE $DB;
+    DROP USER IF EXISTS '$DB_USER'@'%';
+    CREATE USER '$DB_USER'@'%' IDENTIFIED WITH mysql_native_password BY '$sql_escaped_pass';
+    GRANT ALL ON $DB.* TO '$DB_USER'@'%';"
+
+echo "Building the live database with the current migrations"
+(cd "$REPO" && DB_HOST="$TEST_DB_HOST" DB_PORT="$TEST_DB_PORT" DB_USER="$DB_USER" DB_PASS="$DB_PASS" \
+    DB_NAME="$DB" CI_ENV=testing "$PHP_BIN" index.php migrate)
+BASE_VERSION="$(sql 'SELECT version FROM migrations')"
+
+# The site as the web server would run it: settings from the environment
+# (SetEnv), docroot = whatever public_html points to now.
+DB_HOST="$TEST_DB_HOST" DB_PORT="$TEST_DB_PORT" DB_USER="$DB_USER" DB_PASS="$DB_PASS" DB_NAME="$DB" \
+    CI_ENV=testing MAINTENANCE_FILE="$MAINT" DEPLOY_TEST_DOCROOT="$PUBLIC_HTML" \
+    "$PHP_BIN" -d realpath_cache_size=0 -S "127.0.0.1:$PORT" -t "$WORK" "$REPO/tests/deploy/router.php" \
+    > "$WORK/server.log" 2>&1 &
+SERVER_PID=$!
+for _ in $(seq 1 50); do
+    curl -s -o /dev/null "$SITE_URL/" && break
+    sleep 0.1
+done
+
+# --------------------------------------------------------------- releases
+echo "Building release tarballs"
+bash "$REPO/deploy/build-release.sh" HEAD "$WORK/base.tar.gz" > /dev/null
+
+# variant <name> <migration-file>... : base release plus extra migrations
+variant() {
+    local name="$1" dir="$WORK/variant-$1"
+    shift
+    mkdir -p "$dir"
+    tar -xzf "$WORK/base.tar.gz" -C "$dir"
+    for m in "$@"; do cp "$WORK/$m" "$dir/application/migrations/$m"; done
+    tar -czf "$WORK/$name.tar.gz" -C "$dir" .
+}
+
+cat > "$WORK/29991231000000_deploy_probe.php" <<'EOF'
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_Deploy_probe extends CI_Migration
+{
+    public function up()
+    {
+        $this->db->query("CREATE TABLE deploy_probe (id int PRIMARY KEY, note varchar(20))");
+        $this->db->query("INSERT INTO deploy_probe VALUES (1, 'v2')");
+    }
+    public function down() {}
+}
+EOF
+cat > "$WORK/29991231000001_deploy_broken.php" <<'EOF'
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_Deploy_broken extends CI_Migration
+{
+    public function up()
+    {
+        // Changes data and adds a table, then fails: the rollback must undo both.
+        $this->db->query("CREATE TABLE deploy_broken_tmp (id int)");
+        $this->db->query("UPDATE deploy_probe SET note = 'broken'");
+        $this->db->query("SELECT * FROM no_such_table");
+    }
+    public function down() {}
+}
+EOF
+cat > "$WORK/29991231000002_first_broken.php" <<'EOF'
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_First_broken extends CI_Migration
+{
+    public function up()
+    {
+        $this->db->query("CREATE TABLE deploy_broken_tmp (id int)");
+        $this->db->query("SELECT * FROM no_such_table");
+    }
+    public function down() {}
+}
+EOF
+variant first-broken 29991231000002_first_broken.php
+variant probe 29991231000000_deploy_probe.php
+variant broken 29991231000000_deploy_probe.php 29991231000001_deploy_broken.php
+
+ALL_OUTPUT="$WORK/all-output.txt"
+deploy() { # <release-id> <tarball> -> $rc, $out
+    set +e
+    out="$(DEPLOY_ROOT="$ROOT" DEPLOY_PHP="$PHP_BIN" DEPLOY_HEALTH_TRIES="${TRIES:-3}" DEPLOY_HEALTH_WAIT=1 \
+        DEPLOY_SETTLE_SECONDS=0 bash "$REPO/deploy/server/deploy.sh" dev "$1" < "$2" 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$out" >> "$ALL_OUTPUT"
+}
+result_is() { printf '%s\n' "$out" | grep -q "^RESULT site=dev release=$1 .* result=$2\$"; }
+live_release() { readlink "$SITE_DIR/current"; }
+health() { curl -s "$SITE_URL/index.php/Health"; }
+health_ok() { health | grep -q '"status":"ok"'; }
+table_exists() { [ -n "$(sql "SHOW TABLES LIKE '$1'")" ]; }
+backup_count() { find "$ROOT/backups/dev" -name 'pre-deploy-*.sql.gz' | wc -l; }
+
+# --------------------------------------------------------------- 1. first deploy fails
+echo
+echo "1. First deploy with a broken migration"
+deploy first-broken "$WORK/first-broken.tar.gz"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rolled-back" 'result_is first-broken rolled-back'
+check "public_html is the original folder again" '[ -d "$PUBLIC_HTML" ] && [ ! -L "$PUBLIC_HTML" ]'
+check "the old site still answers" '[ "$(curl -s "$SITE_URL/")" = "OLD SITE" ]'
+check "no current link, no pre-deploy folder left" '[ ! -e "$SITE_DIR/current" ] && [ ! -e "$SITE_DIR/public_html.pre-deploy" ]'
+check "the failed release folder is removed" '[ ! -e "$SITE_DIR/releases/first-broken" ]'
+check "the table the migration added is gone" '! table_exists deploy_broken_tmp'
+check "the migration version is unchanged" '[ "$(sql '\''SELECT version FROM migrations'\'')" = "$BASE_VERSION" ]'
+check "maintenance is off" '[ ! -e "$MAINT" ]'
+
+# --------------------------------------------------------------- 2. first deploy
+echo
+echo "2. First deploy"
+deploy r1 "$WORK/base.tar.gz"
+check "exits 0" '[ "$rc" -eq 0 ]'
+check "reports success" 'result_is r1 success'
+check "public_html is a link to current" '[ -L "$PUBLIC_HTML" ] && [ "$(readlink "$PUBLIC_HTML")" = "$SITE_DIR/current" ]'
+check "current points to releases/r1" '[ "$(live_release)" = releases/r1 ]'
+check "the old folder is kept as public_html.pre-deploy" '[ "$(cat "$SITE_DIR/public_html.pre-deploy/index.php")" = '\''<?php echo "OLD SITE";'\'' ]'
+check "the release links the shared .htaccess and uploads" '[ "$(readlink "$SITE_DIR/releases/r1/.htaccess")" = "$SITE_DIR/shared/.htaccess" ] && [ "$(readlink "$SITE_DIR/releases/r1/uploads")" = "$SITE_DIR/shared/uploads" ]'
+check "REVISION holds the commit" '[ "$(cat "$SITE_DIR/releases/r1/REVISION")" = "$(git -C "$REPO" rev-parse HEAD)" ]'
+check "Health is ok with the release's version" 'health_ok'
+check "Health was checked while maintenance was on" 'grep -q '\''f. Health ok .*maintenance=true'\'' "$SITE_DIR/logs/deploy.log"'
+check "the site answers normally (not 503)" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 200 ]'
+check "maintenance is off" '[ ! -e "$MAINT" ]'
+backup="$(find "$ROOT/backups/dev" -name 'pre-deploy-*-r1.sql.gz')"
+check "a pre-deploy backup exists, mode 600" '[ -n "$backup" ] && [ "$(stat -c %a "$backup")" = 600 ]'
+check "the backup is a complete dump" 'gzip -dc "$backup" | tail -n1 | grep -q "Dump completed"'
+check "history.log has a success line" 'grep -q " site=dev release=r1 sha=$(git -C "$REPO" rev-parse HEAD) version=.* backup=pre-deploy-.*-r1.sql.gz result=success\$" "$SITE_DIR/logs/history.log"'
+
+# --------------------------------------------------------------- 3. deploy with a migration
+echo
+echo "3. Deploy with a new migration"
+deploy r2 "$WORK/probe.tar.gz"
+check "exits 0" '[ "$rc" -eq 0 ]'
+check "current points to releases/r2" '[ "$(live_release)" = releases/r2 ]'
+check "the migration ran" '[ "$(sql '\''SELECT note FROM deploy_probe WHERE id = 1'\'')" = v2 ]'
+check "Health is ok" 'health_ok'
+
+# --------------------------------------------------------------- 4. broken migration
+echo
+echo "4. Deploy with a broken migration"
+sql "UPDATE deploy_probe SET note = 'before' WHERE id = 1"
+deploy r3 "$WORK/broken.tar.gz"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rolled-back" 'result_is r3 rolled-back'
+check "says the migration failed" 'grep -q '\''ERROR: Migrations failed'\'' <<< "$out"'
+check "current points back to releases/r2" '[ "$(live_release)" = releases/r2 ]'
+check "the failed release folder is removed" '[ ! -e "$SITE_DIR/releases/r3" ]'
+check "the data the migration changed is restored" '[ "$(sql '\''SELECT note FROM deploy_probe WHERE id = 1'\'')" = before ]'
+check "the table the migration added is gone" '! table_exists deploy_broken_tmp'
+check "the migration version is back to r2's" '[ "$(sql '\''SELECT version FROM migrations'\'')" = 29991231000000 ]'
+check "maintenance is off" '[ ! -e "$MAINT" ]'
+check "Health is ok" 'health_ok'
+check "history.log has a rolled-back line" 'grep -q '\'' release=r3 .* result=rolled-back$'\'' "$SITE_DIR/logs/history.log"'
+
+# --------------------------------------------------------------- 5. failed health check
+echo
+echo "5. Deploy whose health check fails"
+cp "$SITE_DIR/site.conf" "$WORK/site.conf.good"
+printf 'domain=dev.test\nhealth_url=http://127.0.0.1:9/index.php/Health\n' > "$SITE_DIR/site.conf"
+sql "UPDATE deploy_probe SET note = 'kept' WHERE id = 1"
+TRIES=2 deploy r4 "$WORK/probe.tar.gz"
+cp "$WORK/site.conf.good" "$SITE_DIR/site.conf"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rolled-back" 'result_is r4 rolled-back'
+check "says the health check failed" 'grep -q '\''ERROR: Health check failed'\'' <<< "$out"'
+check "current points back to releases/r2" '[ "$(live_release)" = releases/r2 ]'
+check "the failed release folder is removed" '[ ! -e "$SITE_DIR/releases/r4" ]'
+check "the data is as before" '[ "$(sql '\''SELECT note FROM deploy_probe WHERE id = 1'\'')" = kept ]'
+check "maintenance is off" '[ ! -e "$MAINT" ]'
+
+# --------------------------------------------------------------- 6. refusals
+echo
+echo "6. Refusals that change nothing"
+backups_before="$(backup_count)"
+
+deploy r2 "$WORK/probe.tar.gz"
+check "an existing release id is refused" '[ "$rc" -ne 0 ] && result_is r2 failed && grep -q '\''already exists'\'' <<< "$out"'
+check "...and r2 is still live and complete" '[ "$(live_release)" = releases/r2 ] && [ -f "$SITE_DIR/releases/r2/index.php" ]'
+
+touch "$MAINT"
+check "maintenance on by hand gives 503" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 503 ]'
+deploy r5 "$WORK/probe.tar.gz"
+check "a deploy during maintenance is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q '\''Maintenance is already on'\'' <<< "$out"'
+check "...and maintenance is left on" '[ -e "$MAINT" ]'
+rm -f "$MAINT"
+
+flock "$SITE_DIR/.deploy.lock" sleep 5 &
+lock_pid=$!
+sleep 0.5
+deploy r5 "$WORK/probe.tar.gz"
+check "a second deploy at the same time is refused" '[ "$rc" -ne 0 ] && grep -q '\''Another deploy of dev is running'\'' <<< "$out"'
+wait "$lock_pid"
+
+printf 'not a tarball' > "$WORK/junk.tar.gz"
+deploy r5 "$WORK/junk.tar.gz"
+check "a broken tarball is refused" '[ "$rc" -ne 0 ] && result_is r5 failed'
+check "...and nothing was left behind" '[ ! -e "$SITE_DIR/releases/r5" ] && [ -z "$(find "$SITE_DIR/releases" -maxdepth 1 -name '\''.incoming-*'\'')" ]'
+check "no backups were made by refused deploys" '[ "$(backup_count)" = "$backups_before" ]'
+check "r2 is still live" '[ "$(live_release)" = releases/r2 ] && health_ok'
+
+# --------------------------------------------------------------- 7. cleanup
+echo
+echo "7. Old releases and backups are cleaned up"
+for id in r5 r6 r7; do deploy "$id" "$WORK/probe.tar.gz"; done
+check "the last deploys succeeded" '[ "$rc" -eq 0 ] && [ "$(live_release)" = releases/r7 ]'
+check "the newest 3 releases are kept" '[ "$(cd "$SITE_DIR/releases" && ls | sort | tr '\''\n'\'' '\'' '\'')" = "r5 r6 r7 " ]'
+check "the newest 5 backups are kept" '[ "$(backup_count)" = 5 ]'
+check "the newest backup is r7's" '[ "$(cd "$ROOT/backups/dev" && ls | sort | tail -n1)" = "$(cd "$ROOT/backups/dev" && ls *-r7.sql.gz)" ]'
+
+# --------------------------------------------------------------- 8. secrets
+echo
+echo "8. No secrets left or logged"
+check "the password is in no log or output" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT"'
+check "no temporary option, health or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 -name '\''.db-options.*'\'' -o -maxdepth 2 -name '\''.health.*'\'' -o -maxdepth 2 -name '\''.incoming-*'\'')" ]'
+check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 11 ]'
+
+echo
+echo "$pass passed, $fail failed"
+if [ "$fail" -ne 0 ]; then
+    echo
+    echo "--- deploy.log"
+    cat "$SITE_DIR/logs/deploy.log"
+    echo "--- server.log (last 30 lines)"
+    tail -n 30 "$WORK/server.log"
+    exit 1
+fi
