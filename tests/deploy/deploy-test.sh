@@ -328,6 +328,19 @@ check "a site without a site config is refused" '[ "$rc" -ne 0 ] && result_is r5
 cp "$WORK/site.conf.good" "$SITE_CONF"
 check "...and r2 is still live" '[ "$(live_release)" = releases/r2 ] && [ ! -e "$SITE_DIR/releases/r5" ]'
 
+# The live release still linked to the shared files of the folder it was
+# copied from (an old layout): a rollback would land on those.
+mkdir -p "$WORK/old-shared/uploads" && cp "$SITE_DIR/shared/.htaccess" "$WORK/old-shared/.htaccess"
+for f in .htaccess uploads; do
+    ln -sfn "$WORK/old-shared/$f" "$SITE_DIR/releases/r2/$f.new" && mv -T "$SITE_DIR/releases/r2/$f.new" "$SITE_DIR/releases/r2/$f"
+    deploy r5 "$WORK/probe.tar.gz"
+    check "a live release whose $f leads elsewhere is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "live release.s $f doesn.t lead to" <<< "$out"'
+    check "...says nothing was changed" 'grep -q "Nothing was changed" <<< "$out" && ! grep -q "Rolled back:" <<< "$out"'
+    check "...and leaves maintenance off" '[ ! -e "$MAINT" ]'
+    ln -sfn "../../shared/$f" "$SITE_DIR/releases/r2/$f.new" && mv -T "$SITE_DIR/releases/r2/$f.new" "$SITE_DIR/releases/r2/$f"
+done
+check "...and r2 is still live" '[ "$(live_release)" = releases/r2 ] && [ ! -e "$SITE_DIR/releases/r5" ] && health_ok'
+
 printf 'not a tarball' > "$WORK/junk.tar.gz"
 deploy r5 "$WORK/junk.tar.gz"
 check "a broken tarball is refused" '[ "$rc" -ne 0 ] && result_is r5 failed'

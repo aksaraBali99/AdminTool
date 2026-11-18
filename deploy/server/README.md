@@ -68,7 +68,9 @@ of one site never overlap. Then:
 
 1. **Checks** the layout and the settings in `shared/.htaccess`. It refuses
    if maintenance is already on, if `MAINTENANCE_FILE` isn't in `shared/`,
-   or if the release id already exists. If that release is the live one (a
+   if the live release's `.htaccess` or `uploads` doesn't lead to this
+   site's `shared/` (e.g. a release copied from another folder with its old
+   links), or if the release id already exists. If that release is the live one (a
    re-run), it changes nothing and ends with result `already-live`.
 2. **Unpacks** into `releases/<id>/` and links in the shared `.htaccess` and
    `uploads/`.
@@ -142,6 +144,7 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
 3. Shared files. Use the site's current `.htaccess`, plus one line:
 
    ```sh
+   D=~/domains/admin-dev.englishhubbali.com
    cp -p "$D/public_html/.htaccess" "$D/deploy/shared/.htaccess"
    chmod 644 "$D/deploy/shared/.htaccess"
    echo "SetEnv MAINTENANCE_FILE $D/deploy/shared/maintenance.on" >> "$D/deploy/shared/.htaccess"

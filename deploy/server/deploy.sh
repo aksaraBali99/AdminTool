@@ -231,9 +231,13 @@ rollback() {
         if [ "$MAINT_ON" = 1 ]; then
             rm -f "$MAINT" && say "Maintenance off"
         fi
-        RESULT=rolled-back
-        [ "$MAINT_ON" = 1 ] || RESULT=failed
-        say "Rolled back: the previous release is live and the database is as before"
+        if [ "$MAINT_ON" = 1 ]; then
+            RESULT=rolled-back
+            say "Rolled back: the previous release is live and the database is as before"
+        else
+            RESULT=failed
+            say "Nothing was changed: the live release and the database are as before"
+        fi
     else
         RESULT=rollback-incomplete
         say "ROLLBACK INCOMPLETE: maintenance is left ON on purpose."
@@ -327,6 +331,12 @@ if [ -L "$PUBLIC_HTML" ]; then
     PREV="$(readlink "$CURRENT")"
     [ -d "$SITE_DIR/$PREV" ] || die "current points to a missing release ($PREV)"
     say "Live release: ${PREV#releases/}"
+    # The live release is also what a rollback goes back to, so it must use
+    # this site's shared files, not e.g. those of a folder it was copied from.
+    for f in .htaccess uploads; do
+        [ "$(readlink -f "$SITE_DIR/$PREV/$f")" = "$(readlink -f "$SHARED/$f")" ] \
+            || die "The live release's $f doesn't lead to $SHARED/$f; fix its link first (see deploy/server/README.md)"
+    done
     if [ "$PREV" = "releases/$RELEASE" ]; then
         # Re-run of a deploy that already succeeded: nothing to do.
         cat > /dev/null
