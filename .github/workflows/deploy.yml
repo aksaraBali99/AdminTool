@@ -3,12 +3,14 @@ name: Deploy
 # Deploys to DEV (admin-dev.englishhubbali.com) over SSH. See
 # deploy/server/README.md for how the server side works and is set up.
 #   - Automatically, after the "Tests" workflow passes for a push to main
-#     (the exact commit that was tested is deployed).
+#     (the exact commit that was tested is deployed), but only while the
+#     repository variable DEPLOY_DEV_ENABLED is "true" (Settings > Secrets
+#     and variables > Actions > Variables). That switches automatic deploys
+#     on and off without editing this file.
 #   - By hand: Actions > Deploy > Run workflow, with any branch, tag or sha
-#     (used for test drills).
-# Nothing runs until the repository variable DEPLOY_DEV_ENABLED is "true"
-# (Settings > Secrets and variables > Actions > Variables), so the deploy can
-# be switched off without editing this file.
+#     as "ref" (used for the first deploy and test drills). Always allowed:
+#     a person starts it, and the "dev" environment only accepts runs of
+#     this workflow from main.
 #
 # PROD sites still use Hostinger's Git deploy.
 
@@ -31,10 +33,10 @@ jobs:
   deploy-dev:
     name: Deploy to DEV
     if: >-
-      vars.DEPLOY_DEV_ENABLED == 'true' && (
-        github.event_name == 'workflow_dispatch' || (
-          github.event.workflow_run.conclusion == 'success' &&
-          github.event.workflow_run.event == 'push'))
+      github.event_name == 'workflow_dispatch' || (
+        vars.DEPLOY_DEV_ENABLED == 'true' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: dev
