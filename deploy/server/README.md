@@ -120,7 +120,7 @@ Example for `dev`. `<user>` is the SSH user (`u738067934`).
    through hPanel), on one line:
 
    ```
-   command="/home/<user>/sites/bin/gate.sh",restrict ssh-ed25519 AAAA... github-deploy-dev
+   command="/home/<user>/sites/bin/gate.sh",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-dev
    ```
 
    `restrict` turns off port forwarding, agent forwarding, X11 and the TTY.
@@ -151,8 +151,13 @@ Example for `dev`. `<user>` is the SSH user (`u738067934`).
 7. Automatic deploys (after Tests passes for a push to `main`) stay off
    until Settings > Secrets and variables > Actions > Variables has
    `DEPLOY_DEV_ENABLED` = `true`. Set it only after the first deploy and
-   the failure drills pass. Setting it to anything else, or deleting it,
+   the failure drills pass. Setting it to anything other than `true` (GitHub
+   ignores upper/lower case, so `True` counts as `true`), or deleting it,
    switches automatic deploys off again; manual runs keep working.
+
+   To stop all deploys, manual ones included: Actions > Deploy > ⋯ >
+   Disable workflow. Or, on the server, remove the key's line from
+   `~/.ssh/authorized_keys`.
 
 ## Logs
 
