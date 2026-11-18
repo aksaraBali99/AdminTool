@@ -124,9 +124,17 @@ BASE_VERSION="$(sql 'SELECT version FROM migrations')"
 
 # The site as the web server would run it: settings from the environment
 # (SetEnv), docroot = whatever public_html points to now.
+# No caches that would keep serving the old files for a moment after a link
+# changes: realpath_cache_size=0, and no opcache. With opcache on (as CI's
+# PHP has it), the router's "require public_html/index.php" could get the
+# old release's compiled file for up to opcache.revalidate_freq (2 s), so
+# the deploy's 3 quick Health tries saw the old site and it rolled back.
+# Real deploys handle this with a PHP restart and about 3 minutes of tries.
+echo "PHP: opcache.enable_cli=$("$PHP_BIN" -r 'echo var_export(ini_get("opcache.enable_cli"), true);') (switched off for the test site)"
 DB_HOST="$TEST_DB_HOST" DB_PORT="$TEST_DB_PORT" DB_USER="$DB_USER" DB_PASS="$DB_PASS" DB_NAME="$DB" \
     CI_ENV=testing MAINTENANCE_FILE="$MAINT" DEPLOY_TEST_DOCROOT="$PUBLIC_HTML" \
-    "$PHP_BIN" -d realpath_cache_size=0 -S "127.0.0.1:$PORT" -t "$WORK" "$REPO/tests/deploy/router.php" \
+    "$PHP_BIN" -d realpath_cache_size=0 -d opcache.enable_cli=0 -d opcache.enable=0 \
+    -S "127.0.0.1:$PORT" -t "$WORK" "$REPO/tests/deploy/router.php" \
     > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 50); do
