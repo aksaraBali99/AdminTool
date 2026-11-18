@@ -18,10 +18,14 @@
 #   d. php index.php migrate in the new release
 #   e. "current" -> releases/<id>, switched atomically
 #   f. Health must answer "status":"ok", the release's VERSION and its
-#      REVISION (full commit sha), i.e. the new release is what is served
+#      REVISION (full commit sha), i.e. the new release is what is served;
+#      retried for about 3 minutes
 #   g. maintenance off; keep the newest 3 releases and 5 pre-deploy backups
 #   h. on any failure after (b): restore the database if migrations started,
 #      put the previous release back, maintenance off, exit non-zero
+#
+# Deploying the release that is already live changes nothing and succeeds
+# (result "already-live"), so re-running a deploy is harmless.
 #
 # Database settings are read from the SetEnv lines of shared/.htaccess. They
 # are never printed or logged, and never put on a command line: mysqldump and
@@ -42,8 +46,10 @@ fi
 # so they can't be set over SSH.
 ROOT="${DEPLOY_ROOT:-$HOME}"
 PHP="${DEPLOY_PHP:-php}"
-HEALTH_TRIES="${DEPLOY_HEALTH_TRIES:-6}"
-HEALTH_WAIT="${DEPLOY_HEALTH_WAIT:-5}"
+# About 3 minutes: PHP workers may keep resolving the old release for up to
+# realpath_cache_ttl (120 s by default) after "current" moves.
+HEALTH_TRIES="${DEPLOY_HEALTH_TRIES:-18}"
+HEALTH_WAIT="${DEPLOY_HEALTH_WAIT:-10}"
 SETTLE_SECONDS="${DEPLOY_SETTLE_SECONDS:-3}"
 KEEP_RELEASES=3
 KEEP_BACKUPS=5
@@ -136,6 +142,17 @@ write_option_file() {
     } > "$OPT"
 }
 
+# Asks LiteSpeed to restart this account's PHP workers, so none keeps serving
+# the old release from PHP's realpath cache after a link changed. Harmless
+# where LiteSpeed isn't used.
+restart_php() {
+    if touch "$ROOT/.lsphp_restart.txt"; then
+        say "$1 Asked LiteSpeed to restart PHP (~/.lsphp_restart.txt)"
+    else
+        say "$1 Warning: could not touch ~/.lsphp_restart.txt"
+    fi
+}
+
 # Points $1 (a link) at $2, atomically.
 relink() {
     ln -sfn "$2" "$1.deploy-new"
@@ -170,9 +187,16 @@ rollback() {
     rm -f "$CURRENT.deploy-new"
     if [ -n "$PUBLIC_HTML" ]; then rm -f "$PUBLIC_HTML.deploy-new"; fi
 
+    if [ -n "$BACKUP" ]; then rm -f "$BACKUP.partial"; fi
+
     if [ "$SWITCHED" = 1 ] && [ -n "$PREV" ]; then
-        relink "$CURRENT" "$PREV" && say "current points back to $PREV" \
-            || { say "Could not point current back to $PREV"; db_ok=0; }
+        if relink "$CURRENT" "$PREV"; then
+            say "current points back to $PREV"
+            restart_php "  "
+        else
+            say "Could not point current back to $PREV"
+            db_ok=0
+        fi
     fi
     if [ "$PUBLIC_HTML_SWAPPED" = 1 ]; then
         if [ -L "$PUBLIC_HTML" ]; then rm -f "$PUBLIC_HTML"; fi
@@ -210,25 +234,28 @@ rollback() {
 }
 
 on_exit() {
-    local rc=$?
+    local rc=$? backup_name=""
     set +eu
     trap - EXIT
-    if [ "$RESULT" != success ]; then
+    # Nothing may interrupt the rollback.
+    trap '' TERM INT
+    if [ "$RESULT" != success ] && [ "$RESULT" != already-live ]; then
         say "FAILED during step '$STEP' (exit $rc)"
         rollback
     fi
     [ -n "$OPT" ] && rm -f "$OPT"
     [ -n "$TMP_BODY" ] && rm -f "$TMP_BODY"
     [ -n "$INCOMING" ] && rm -rf "$INCOMING"
+    if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then backup_name="$(basename "$BACKUP")"; fi
     if [ -d "$LOGS" ]; then
         printf '%s site=%s release=%s sha=%s version=%s backup=%s result=%s\n' \
-            "$(now)" "$SITE" "$RELEASE" "$SHA" "$VERSION" "${BACKUP:+$(basename "$BACKUP")}" "$RESULT" \
+            "$(now)" "$SITE" "$RELEASE" "$SHA" "$VERSION" "$backup_name" "$RESULT" \
             >> "$HISTORY" 2>/dev/null
     fi
     # Read by the workflow for its job summary.
     printf 'RESULT site=%s release=%s sha=%s version=%s backup=%s result=%s\n' \
-        "$SITE" "$RELEASE" "$SHA" "$VERSION" "${BACKUP:+$(basename "$BACKUP")}" "$RESULT" 2>/dev/null
-    if [ "$RESULT" = success ]; then exit 0; fi
+        "$SITE" "$RELEASE" "$SHA" "$VERSION" "$backup_name" "$RESULT" 2>/dev/null
+    if [ "$RESULT" = success ] || [ "$RESULT" = already-live ]; then exit 0; fi
     [ "$rc" -ne 0 ] || rc=1
     exit "$rc"
 }
@@ -280,6 +307,15 @@ if [ -L "$PUBLIC_HTML" ]; then
     PREV="$(readlink "$CURRENT")"
     [ -d "$SITE_DIR/$PREV" ] || die "current points to a missing release ($PREV)"
     say "Live release: ${PREV#releases/}"
+    if [ "$PREV" = "releases/$RELEASE" ]; then
+        # Re-run of a deploy that already succeeded: nothing to do.
+        cat > /dev/null
+        if [ -f "$SITE_DIR/$PREV/REVISION" ]; then SHA="$(tr -d '[:space:]' < "$SITE_DIR/$PREV/REVISION")"; fi
+        if [ -f "$SITE_DIR/$PREV/VERSION" ]; then VERSION="$(tr -d '[:space:]' < "$SITE_DIR/$PREV/VERSION")"; fi
+        RESULT=already-live
+        say "=== Release $RELEASE is already live; nothing changed"
+        exit 0
+    fi
 elif [ -d "$PUBLIC_HTML" ]; then
     FIRST_RUN=1
     [ ! -e "$PRE_DEPLOY" ] && [ ! -L "$PRE_DEPLOY" ] || die "$PRE_DEPLOY already exists"
@@ -327,6 +363,7 @@ if [ "$FIRST_RUN" = 1 ]; then
     PUBLIC_HTML_SWAPPED=1
     mv -T "$PUBLIC_HTML.deploy-new" "$PUBLIC_HTML"
     say "b. public_html moved to $PRE_DEPLOY and replaced by a link to current"
+    restart_php "b."
 fi
 # Let requests that started before maintenance finish.
 sleep "$SETTLE_SECONDS"
@@ -371,6 +408,7 @@ if [ "$FIRST_RUN" = 0 ]; then
     SWITCHED=1
 fi
 say "e. current -> releases/$RELEASE"
+restart_php "e."
 
 # ---------------------------------------------------------------- f. health
 STEP=health

@@ -40,7 +40,9 @@ also has a `REVISION` file with the full sha.
 (two deploys of one site never overlap), then:
 
 1. **Checks** the layout and the settings in `shared/.htaccess`. It refuses
-   if maintenance is already on, or if the release id already exists.
+   if maintenance is already on, or if the release id already exists. If
+   that release is the live one (a re-run), it changes nothing and ends
+   with result `already-live`.
 2. **Unpacks** into `releases/<id>/` and links in the shared `.htaccess` and
    `uploads/`.
 3. **Turns maintenance on**: creates the `MAINTENANCE_FILE`. On the very
@@ -54,7 +56,11 @@ also has a `REVISION` file with the full sha.
 7. **Checks Health**: `https://<domain>/index.php/Health` must say
    `"status":"ok"`, the release's `VERSION` and its `REVISION` (full commit
    sha). That shows the new release is what the site actually serves, not an
-   older folder or a cached page. It tries 6 times, 5 s apart.
+   older folder or a cached page. It tries for about 3 minutes (18 times,
+   10 s apart), because PHP workers may keep resolving the old release for
+   up to 2 minutes (PHP's realpath cache). To shorten that, the deploy
+   touches `~/.lsphp_restart.txt` after every link change, which asks
+   LiteSpeed to restart the account's PHP workers.
 8. **Turns maintenance off**, then removes old releases and backups.
 
 If any step after 3 fails, it **rolls back**:
@@ -147,8 +153,9 @@ Example for `dev`. `<user>` is the SSH user (`u738067934`).
   `2026-11-18T05:05:02Z [dev 80bc554e1a2b] c. Backup pre-deploy-...sql.gz (48213 bytes)`.
 - `~/sites/<site>/logs/history.log`: one line per deploy, e.g.
   `2026-11-18T05:05:40Z site=dev release=80bc554e1a2b sha=80bc554... version=1.1.1 backup=pre-deploy-20261118T050505Z-80bc554e1a2b.sql.gz result=success`.
-  The result is `success`, `rolled-back`, `failed` (refused before
-  anything changed) or `rollback-incomplete`.
+  The result is `success`, `already-live` (re-run, nothing changed),
+  `rolled-back`, `failed` (refused before anything changed) or
+  `rollback-incomplete`.
 - `~/sites/bin/gate.log`: refused SSH commands.
 - In GitHub: the Deploy run's log shows the same steps, and its summary
   shows site, version, commit, backup and result.

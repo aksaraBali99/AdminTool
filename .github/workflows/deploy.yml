@@ -77,8 +77,10 @@ jobs:
 
           ssh_dir="$RUNNER_TEMP/ssh"
           install -m 700 -d "$ssh_dir"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/key"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          # tr: values pasted from Windows may carry CR characters, which
+          # make ssh reject the key ("invalid format").
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$ssh_dir/known_hosts"
           chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
 
           # The host key is pinned (DEPLOY_KNOWN_HOSTS): an unknown or
@@ -108,6 +110,7 @@ jobs:
           result="$(field result)"; backup="$(field backup)"
           case "$result" in
             success) shown="✅ deployed" ;;
+            already-live) shown="✅ already live, nothing changed" ;;
             rolled-back) shown="↩️ failed, rolled back (previous release live)" ;;
             rollback-incomplete) shown="🛑 failed, rollback incomplete: maintenance left on, see deploy/server/README.md" ;;
             failed) shown="❌ failed before anything changed" ;;

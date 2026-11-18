@@ -209,6 +209,7 @@ check "REVISION holds the commit" '[ "$(cat "$SITE_DIR/releases/r1/REVISION")" =
 check "Health is ok with the release's version" 'health_ok'
 check "Health shows the deployed commit as revision" 'health | grep -q "\"revision\":\"$(git -C "$REPO" rev-parse HEAD)\""'
 check "the log shows the revision Health answered" 'grep -q "f. Health ok .*revision=.$(git -C "$REPO" rev-parse HEAD)" "$SITE_DIR/logs/deploy.log"'
+check "PHP restart was requested after the switch" '[ -f "$ROOT/.lsphp_restart.txt" ] && grep -q "e. Asked LiteSpeed to restart PHP" "$SITE_DIR/logs/deploy.log"'
 check "Health was checked while maintenance was on" 'grep -q '\''f. Health ok .*maintenance=true'\'' "$SITE_DIR/logs/deploy.log"'
 check "the site answers normally (not 503)" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 200 ]'
 check "maintenance is off" '[ ! -e "$MAINT" ]'
@@ -276,8 +277,13 @@ echo "6. Refusals that change nothing"
 backups_before="$(backup_count)"
 
 deploy r2 "$WORK/probe.tar.gz"
-check "an existing release id is refused" '[ "$rc" -ne 0 ] && result_is r2 failed && grep -q '\''already exists'\'' <<< "$out"'
+check "re-deploying the live release succeeds without changes" '[ "$rc" -eq 0 ] && result_is r2 already-live && grep -q "already live; nothing changed" <<< "$out"'
+check "...and reports its commit" 'grep -q "^RESULT site=dev release=r2 sha=$(git -C "$REPO" rev-parse HEAD) " <<< "$out"'
 check "...and r2 is still live and complete" '[ "$(live_release)" = releases/r2 ] && [ -f "$SITE_DIR/releases/r2/index.php" ]'
+
+deploy r1 "$WORK/base.tar.gz"
+check "an existing release that isn't live is refused" '[ "$rc" -ne 0 ] && result_is r1 failed && grep -q "already exists" <<< "$out"'
+check "...and r2 is still live" '[ "$(live_release)" = releases/r2 ]'
 
 touch "$MAINT"
 check "maintenance on by hand gives 503" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 503 ]'
@@ -301,6 +307,17 @@ tar -czf "$WORK/no-revision.tar.gz" -C "$WORK/no-revision" .
 deploy r5 "$WORK/no-revision.tar.gz"
 check "a release without REVISION is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "The release has no REVISION" <<< "$out"'
 check "...and nothing was left behind" '[ ! -e "$SITE_DIR/releases/r5" ] && [ -z "$(find "$SITE_DIR/releases" -maxdepth 1 -name '\''.incoming-*'\'')" ]'
+# A backup that fails halfway: the partial file must not stay behind.
+mkdir -p "$WORK/fake-bin"
+printf '#!/bin/sh\necho "-- partial dump"\nexit 2\n' > "$WORK/fake-bin/mysqldump"
+chmod +x "$WORK/fake-bin/mysqldump"
+PATH="$WORK/fake-bin:$PATH" deploy r5 "$WORK/probe.tar.gz"
+check "a failed backup rolls back" '[ "$rc" -ne 0 ] && result_is r5 rolled-back'
+check "...without a backup name in the result" 'grep -q "^RESULT .* backup= result=rolled-back$" <<< "$out"'
+check "...leaves no partial backup" '[ -z "$(find "$ROOT/backups/dev" -name "*.partial")" ]'
+check "...and turns maintenance off" '[ ! -e "$MAINT" ]'
+check "...and the database is untouched" '[ "$(sql "SELECT note FROM deploy_probe WHERE id = 1")" = kept ]'
+
 check "no backups were made by refused deploys" '[ "$(backup_count)" = "$backups_before" ]'
 check "r2 is still live" '[ "$(live_release)" = releases/r2 ] && health_ok'
 
@@ -318,7 +335,7 @@ echo
 echo "8. No secrets left or logged"
 check "the password is in no log or output" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT"'
 check "no temporary option, health or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 -name '\''.db-options.*'\'' -o -maxdepth 2 -name '\''.health.*'\'' -o -maxdepth 2 -name '\''.incoming-*'\'')" ]'
-check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 12 ]'
+check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 15 ]'
 
 echo
 echo "$pass passed, $fail failed"
