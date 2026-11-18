@@ -28,7 +28,12 @@ SITE_URL="http://127.0.0.1:$PORT"
 
 WORK="$(mktemp -d)"
 ROOT="$WORK/home"
-SITE_DIR="$ROOT/sites/dev"
+# Not "admintool" on purpose: nothing in deploy.sh may depend on the app's name.
+APP_DIR="$ROOT/apps/someapp"
+BIN="$APP_DIR/bin"
+SITE_CONF="$BIN/sites/dev.conf"
+BACKUP_DIR="$APP_DIR/backups/dev"
+SITE_DIR="$ROOT/domains/dev.test/deploy"
 PUBLIC_HTML="$ROOT/domains/dev.test/public_html"
 MAINT="$SITE_DIR/shared/maintenance.on"
 SERVER_PID=""
@@ -59,9 +64,13 @@ check() { # <description> '<shell expression>'
 # --------------------------------------------------------------- the fake server
 echo "Setting up a fake site in $ROOT"
 mkdir -p "$SITE_DIR"/{releases,shared/uploads/logo,shared/uploads/karyawan,logs} \
-    "$ROOT/backups/dev" "$PUBLIC_HTML"
+    "$BIN/sites" "$BACKUP_DIR" "$PUBLIC_HTML"
+# Installed the way the README says: deploy.sh finds the app's folder from
+# where it is, so it is run from the fake bin/, not from the repository.
+cp "$REPO/deploy/server/deploy.sh" "$BIN/"
+chmod 700 "$BIN/deploy.sh"
 echo '<?php echo "OLD SITE";' > "$PUBLIC_HTML/index.php"
-printf 'domain=dev.test\nhealth_url=%s/index.php/Health\n' "$SITE_URL" > "$SITE_DIR/site.conf"
+printf 'domain=dev.test\nhealth_url=%s/index.php/Health\n' "$SITE_URL" > "$SITE_CONF"
 cat > "$SITE_DIR/shared/.htaccess" <<EOF
 # Like a real site's .htaccess: settings inside a block, a commented-out line.
 <IfModule mod_env.c>
@@ -169,7 +178,7 @@ ALL_OUTPUT="$WORK/all-output.txt"
 deploy() { # <release-id> <tarball> -> $rc, $out
     set +e
     out="$(DEPLOY_ROOT="$ROOT" DEPLOY_PHP="$PHP_BIN" DEPLOY_HEALTH_TRIES="${TRIES:-3}" DEPLOY_HEALTH_WAIT=1 \
-        DEPLOY_SETTLE_SECONDS=0 bash "$REPO/deploy/server/deploy.sh" dev "$1" < "$2" 2>&1)"
+        DEPLOY_SETTLE_SECONDS=0 "$BIN/deploy.sh" dev "$1" < "$2" 2>&1)"
     rc=$?
     set -e
     printf '%s\n' "$out" >> "$ALL_OUTPUT"
@@ -179,7 +188,7 @@ live_release() { readlink "$SITE_DIR/current"; }
 health() { curl -s "$SITE_URL/index.php/Health"; }
 health_ok() { health | grep -q '"status":"ok"'; }
 table_exists() { [ -n "$(sql "SHOW TABLES LIKE '$1'")" ]; }
-backup_count() { find "$ROOT/backups/dev" -name 'pre-deploy-*.sql.gz' | wc -l; }
+backup_count() { find "$BACKUP_DIR" -name 'pre-deploy-*.sql.gz' | wc -l; }
 
 # --------------------------------------------------------------- 1. first deploy fails
 echo
@@ -204,7 +213,9 @@ check "reports success" 'result_is r1 success'
 check "public_html is a link to current" '[ -L "$PUBLIC_HTML" ] && [ "$(readlink "$PUBLIC_HTML")" = "$SITE_DIR/current" ]'
 check "current points to releases/r1" '[ "$(live_release)" = releases/r1 ]'
 check "the old folder is kept as public_html.pre-deploy" '[ "$(cat "$SITE_DIR/public_html.pre-deploy/index.php")" = '\''<?php echo "OLD SITE";'\'' ]'
-check "the release links the shared .htaccess and uploads" '[ "$(readlink "$SITE_DIR/releases/r1/.htaccess")" = "$SITE_DIR/shared/.htaccess" ] && [ "$(readlink "$SITE_DIR/releases/r1/uploads")" = "$SITE_DIR/shared/uploads" ]'
+check "the release links the shared .htaccess and uploads (relative links)" '[ "$(readlink "$SITE_DIR/releases/r1/.htaccess")" = ../../shared/.htaccess ] && [ "$(readlink "$SITE_DIR/releases/r1/uploads")" = ../../shared/uploads ]'
+check "...which resolve to the shared files" '[ "$(readlink -f "$SITE_DIR/releases/r1/.htaccess")" = "$(readlink -f "$SITE_DIR/shared/.htaccess")" ] && [ "$(readlink -f "$PUBLIC_HTML/uploads")" = "$(readlink -f "$SITE_DIR/shared/uploads")" ]'
+check "the backup is in the app's backups folder" '[ -n "$(find "$BACKUP_DIR" -name '\''pre-deploy-*-r1.sql.gz'\'')" ]'
 check "REVISION holds the commit" '[ "$(cat "$SITE_DIR/releases/r1/REVISION")" = "$(git -C "$REPO" rev-parse HEAD)" ]'
 check "Health is ok with the release's version" 'health_ok'
 check "Health shows the deployed commit as revision" 'health | grep -q "\"revision\":\"$(git -C "$REPO" rev-parse HEAD)\""'
@@ -213,7 +224,7 @@ check "PHP restart was requested after the switch" '[ -f "$ROOT/.lsphp_restart.t
 check "Health was checked while maintenance was on" 'grep -q '\''f. Health ok .*maintenance=true'\'' "$SITE_DIR/logs/deploy.log"'
 check "the site answers normally (not 503)" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 200 ]'
 check "maintenance is off" '[ ! -e "$MAINT" ]'
-backup="$(find "$ROOT/backups/dev" -name 'pre-deploy-*-r1.sql.gz')"
+backup="$(find "$BACKUP_DIR" -name 'pre-deploy-*-r1.sql.gz')"
 check "a pre-deploy backup exists, mode 600" '[ -n "$backup" ] && [ "$(stat -c %a "$backup")" = 600 ]'
 check "the backup is a complete dump" 'gzip -dc "$backup" | tail -n1 | grep -q "Dump completed"'
 check "history.log has a success line" 'grep -q " site=dev release=r1 sha=$(git -C "$REPO" rev-parse HEAD) version=.* backup=pre-deploy-.*-r1.sql.gz result=success\$" "$SITE_DIR/logs/history.log"'
@@ -247,11 +258,11 @@ check "history.log has a rolled-back line" 'grep -q '\'' release=r3 .* result=ro
 # --------------------------------------------------------------- 5. failed health check
 echo
 echo "5. Deploy whose health check fails"
-cp "$SITE_DIR/site.conf" "$WORK/site.conf.good"
-printf 'domain=dev.test\nhealth_url=http://127.0.0.1:9/index.php/Health\n' > "$SITE_DIR/site.conf"
+cp "$SITE_CONF" "$WORK/site.conf.good"
+printf 'domain=dev.test\nhealth_url=http://127.0.0.1:9/index.php/Health\n' > "$SITE_CONF"
 sql "UPDATE deploy_probe SET note = 'kept' WHERE id = 1"
 TRIES=2 deploy r4 "$WORK/probe.tar.gz"
-cp "$WORK/site.conf.good" "$SITE_DIR/site.conf"
+cp "$WORK/site.conf.good" "$SITE_CONF"
 check "exits non-zero" '[ "$rc" -ne 0 ]'
 check "reports rolled-back" 'result_is r4 rolled-back'
 check "says the health check failed" 'grep -q '\''ERROR: Health check failed'\'' <<< "$out"'
@@ -299,6 +310,24 @@ deploy r5 "$WORK/probe.tar.gz"
 check "a second deploy at the same time is refused" '[ "$rc" -ne 0 ] && grep -q '\''Another deploy of dev is running'\'' <<< "$out"'
 wait "$lock_pid"
 
+# A MAINTENANCE_FILE outside shared/, e.g. still pointing at an old layout.
+cp "$SITE_DIR/shared/.htaccess" "$WORK/htaccess.good"
+mkdir -p "$WORK/old-layout"
+sed -i "s|SetEnv MAINTENANCE_FILE .*|SetEnv MAINTENANCE_FILE $WORK/old-layout/maintenance.on|" "$SITE_DIR/shared/.htaccess"
+deploy r5 "$WORK/probe.tar.gz"
+cp "$WORK/htaccess.good" "$SITE_DIR/shared/.htaccess"
+check "a MAINTENANCE_FILE outside shared/ is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "MAINTENANCE_FILE must be in" <<< "$out" && [ ! -e "$WORK/old-layout/maintenance.on" ]'
+
+cp "$SITE_CONF" "$WORK/site.conf.good"
+printf 'domain=../dev.test\n' > "$SITE_CONF"
+deploy r5 "$WORK/probe.tar.gz"
+check "a domain with .. in the site config is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "has no valid domain=" <<< "$out"'
+rm "$SITE_CONF"
+deploy r5 "$WORK/probe.tar.gz"
+check "a site without a site config is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "Missing .*sites/dev.conf" <<< "$out"'
+cp "$WORK/site.conf.good" "$SITE_CONF"
+check "...and r2 is still live" '[ "$(live_release)" = releases/r2 ] && [ ! -e "$SITE_DIR/releases/r5" ]'
+
 printf 'not a tarball' > "$WORK/junk.tar.gz"
 deploy r5 "$WORK/junk.tar.gz"
 check "a broken tarball is refused" '[ "$rc" -ne 0 ] && result_is r5 failed'
@@ -314,7 +343,7 @@ chmod +x "$WORK/fake-bin/mysqldump"
 PATH="$WORK/fake-bin:$PATH" deploy r5 "$WORK/probe.tar.gz"
 check "a failed backup rolls back" '[ "$rc" -ne 0 ] && result_is r5 rolled-back'
 check "...without a backup name in the result" 'grep -q "^RESULT .* backup= result=rolled-back$" <<< "$out"'
-check "...leaves no partial backup" '[ -z "$(find "$ROOT/backups/dev" -name "*.partial")" ]'
+check "...leaves no partial backup" '[ -z "$(find "$BACKUP_DIR" -name "*.partial")" ]'
 check "...and turns maintenance off" '[ ! -e "$MAINT" ]'
 check "...and the database is untouched" '[ "$(sql "SELECT note FROM deploy_probe WHERE id = 1")" = kept ]'
 
@@ -328,7 +357,7 @@ for id in r5 r6 r7; do deploy "$id" "$WORK/probe.tar.gz"; done
 check "the last deploys succeeded" '[ "$rc" -eq 0 ] && [ "$(live_release)" = releases/r7 ]'
 check "the newest 3 releases are kept" '[ "$(cd "$SITE_DIR/releases" && ls | sort | tr '\''\n'\'' '\'' '\'')" = "r5 r6 r7 " ]'
 check "the newest 5 backups are kept" '[ "$(backup_count)" = 5 ]'
-check "the newest backup is r7's" '[ "$(cd "$ROOT/backups/dev" && ls | sort | tail -n1)" = "$(cd "$ROOT/backups/dev" && ls *-r7.sql.gz)" ]'
+check "the newest backup is r7's" '[ "$(cd "$BACKUP_DIR" && ls | sort | tail -n1)" = "$(cd "$BACKUP_DIR" && ls *-r7.sql.gz)" ]'
 
 # --------------------------------------------------------------- 8. secrets
 echo

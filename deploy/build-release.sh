@@ -7,7 +7,7 @@
 # The tarball holds the committed files of <git-ref> (never local changes),
 # minus what a live site doesn't need, plus REVISION (the full commit sha).
 # It never holds .git, .htaccess or uploads/: each site keeps its own
-# .htaccess (database settings) and uploads/ in ~/sites/<site>/shared/.
+# .htaccess (database settings) and uploads/ in ~/domains/<domain>/deploy/shared/.
 set -euo pipefail
 
 ref="${1:?usage: build-release.sh <git-ref> <out.tar.gz>}"

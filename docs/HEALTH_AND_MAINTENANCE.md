@@ -50,7 +50,7 @@ Each site sets it in its shared `.htaccess`, as an absolute path outside the
 release folders:
 
 ```apache
-SetEnv MAINTENANCE_FILE /home/<user>/sites/<site>/shared/maintenance.on
+SetEnv MAINTENANCE_FILE /home/<user>/domains/<domain>/deploy/shared/maintenance.on
 ```
 
 That way there is one switch per site, whichever release the live link
@@ -68,8 +68,8 @@ The deploy creates and removes the file itself. To switch it by hand over
 SSH (use the path from the site's `MAINTENANCE_FILE`):
 
 ```sh
-touch /home/<user>/sites/<site>/shared/maintenance.on   # on
-rm /home/<user>/sites/<site>/shared/maintenance.on      # off
+touch /home/<user>/domains/<domain>/deploy/shared/maintenance.on   # on
+rm /home/<user>/domains/<domain>/deploy/shared/maintenance.on      # off
 ```
 
 Check it worked: `https://<site>/Health` shows `"maintenance":true` or

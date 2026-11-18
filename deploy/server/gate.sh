@@ -1,8 +1,10 @@
 #!/bin/bash
-# The only command the GitHub deploy key may run. It is installed as
-#   ~/sites/bin/gate.sh
-# and forced for that key in ~/.ssh/authorized_keys:
-#   command="/home/<user>/sites/bin/gate.sh",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-dev
+# The only command an app's GitHub deploy key may run. It is installed as
+#   ~/apps/<app>/bin/gate.sh
+# and forced for that app's key in ~/.ssh/authorized_keys, e.g. for AdminTool:
+#   command="/home/<user>/apps/admintool/bin/gate.sh",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-dev
+# Each app has its own bin/ folder and its own key, so one app's key can
+# never deploy another app.
 #
 # sshd puts what the client asked to run in $SSH_ORIGINAL_COMMAND. The only
 # accepted form is exactly
