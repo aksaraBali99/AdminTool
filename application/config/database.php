@@ -21,7 +21,8 @@ $db['default'] = array(
 	'dbdriver' => 'mysqli',
 	'dbprefix' => '',
 	'pconnect' => FALSE,
-	'db_debug' => (ENVIRONMENT !== 'production'),
+	// Off for the Health page, which reports database problems as JSON.
+	'db_debug' => (ENVIRONMENT !== 'production') && ! defined('HEALTH_CHECK'),
 	'cache_on' => FALSE,
 	'cachedir' => '',
 	'char_set' => 'utf8',

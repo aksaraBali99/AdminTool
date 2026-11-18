@@ -41,18 +41,24 @@
  * MAINTENANCE MODE
  *---------------------------------------------------------------
  *
- * While a file named "maintenance.on" exists next to this index.php,
- * every web request gets a short "under maintenance" page (HTTP 503),
- * so nobody can save data while a deploy backs up and migrates the
- * database. The deploy creates and removes the file; see
- * docs/HEALTH_AND_MAINTENANCE.md.
+ * While the maintenance file exists, every web request gets a short
+ * "under maintenance" page (HTTP 503), so nobody can save data while a
+ * deploy backs up and migrates the database. The deploy creates and
+ * removes the file; see docs/HEALTH_AND_MAINTENANCE.md.
+ *
+ * The file is MAINTENANCE_FILE from the server environment (SetEnv in the
+ * site's shared .htaccess), an absolute path outside the release folders,
+ * so the switch stays on while the live link moves between releases. When
+ * that is not set, it is "maintenance.on" next to this index.php.
  *
  * Not affected:
  *   - command-line runs (php index.php migrate keeps working), and
  *   - the Health page, so a deploy can check the new code before it
  *     takes the maintenance page down.
  */
-if (PHP_SAPI !== 'cli' && file_exists(__DIR__.DIRECTORY_SEPARATOR.'maintenance.on'))
+define('MAINTENANCE_FILE', getenv('MAINTENANCE_FILE') ?: __DIR__.DIRECTORY_SEPARATOR.'maintenance.on');
+
+if (PHP_SAPI !== 'cli' && file_exists(MAINTENANCE_FILE))
 {
 	$maintenance_path = (string) parse_url(isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '/', PHP_URL_PATH);
 	if ( ! preg_match('#^/(index\.php/)?health/?$#i', $maintenance_path))

@@ -17,6 +17,16 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Health extends CI_Controller
 {
+    public function __construct()
+    {
+        // The database is autoloaded and connects inside parent::__construct().
+        // Outside production, db_debug would turn a failed connection into an
+        // HTML error page before index() runs; config/database.php switches
+        // db_debug off when this is defined, so the outage is reported as JSON.
+        defined('HEALTH_CHECK') or define('HEALTH_CHECK', TRUE);
+        parent::__construct();
+    }
+
     public function index()
     {
         $result = array(
@@ -26,7 +36,7 @@ class Health extends CI_Controller
             'database' => 'error',
             'migrations' => 'unknown',
             'db_version' => null,
-            'maintenance' => file_exists(FCPATH . 'maintenance.on'),
+            'maintenance' => file_exists(MAINTENANCE_FILE),
         );
 
         // Never let a database problem turn into an error page here:

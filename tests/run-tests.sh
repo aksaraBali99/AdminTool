@@ -56,6 +56,16 @@ if command -v cygpath >/dev/null 2>&1; then
     SESSION_SAVE_PATH="$(cygpath -w "$SESSION_SAVE_PATH")"
 fi
 
+# Maintenance switch outside the app folder, the way a deployed site sets it
+# (SetEnv MAINTENANCE_FILE in its shared .htaccess). tests/Health uses it.
+MAINTENANCE_DIR="$(pwd)/tests/.maintenance-tmp"
+rm -rf "$MAINTENANCE_DIR"
+mkdir -p "$MAINTENANCE_DIR"
+if command -v cygpath >/dev/null 2>&1; then
+    MAINTENANCE_DIR="$(cygpath -w "$MAINTENANCE_DIR")"
+fi
+export MAINTENANCE_FILE="$MAINTENANCE_DIR/maintenance.on"
+
 echo "Starting throwaway PHP server at $ADMINTOOL_BASE_URL ..."
 "$PHP_BIN" -d session.save_path="$SESSION_SAVE_PATH" -S "$HOST:$PORT" -t . tests/router.php >/tmp/admintool-test-server.log 2>&1 &
 SERVER_PID=$!

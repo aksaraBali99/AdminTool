@@ -42,6 +42,7 @@ vendor/
 # Session files written by the test harness's throwaway PHP server
 # (tests/run-tests.sh, tests/serve-test-app.sh)
 tests/.session-tmp/
+tests/.maintenance-tmp/
 
 # Playwright (e2e/) - npm dependencies and run artifacts
 e2e/node_modules/

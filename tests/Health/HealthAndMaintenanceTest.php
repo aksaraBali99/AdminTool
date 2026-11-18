@@ -10,18 +10,28 @@ use Tests\Support\ApiClient;
  * (docs/HEALTH_AND_MAINTENANCE.md):
  *  - Health answers JSON without a login, and reports the database and
  *    migrations as ok on the migrated test database.
- *  - While maintenance.on exists next to index.php, every page answers 503
- *    with the maintenance page, except Health.
+ *  - While the maintenance file exists, every page answers 503 with the
+ *    maintenance page, except Health.
+ *  - The maintenance file is MAINTENANCE_FILE when set (tests/run-tests.sh
+ *    sets it, as a deployed site's shared .htaccess does), not the default
+ *    maintenance.on next to index.php.
  */
 final class HealthAndMaintenanceTest extends TestCase
 {
-    private const FLAG = __DIR__ . '/../../maintenance.on';
+    private const DEFAULT_FLAG = __DIR__ . '/../../maintenance.on';
+
+    private function flag(): string
+    {
+        return getenv('MAINTENANCE_FILE') ?: self::DEFAULT_FLAG;
+    }
 
     protected function tearDown(): void
     {
         // Never leave the test app stuck in maintenance mode.
-        if (file_exists(self::FLAG)) {
-            unlink(self::FLAG);
+        foreach ([$this->flag(), self::DEFAULT_FLAG] as $file) {
+            if (file_exists($file)) {
+                unlink($file);
+            }
         }
     }
 
@@ -45,7 +55,7 @@ final class HealthAndMaintenanceTest extends TestCase
 
     public function test_maintenance_mode_blocks_pages_but_not_health(): void
     {
-        touch(self::FLAG);
+        touch($this->flag());
 
         $login = ApiClient::anonymous()->get('Login');
         $this->assertSame(503, $login->getStatusCode());
@@ -65,9 +75,28 @@ final class HealthAndMaintenanceTest extends TestCase
 
     public function test_site_works_again_after_maintenance_ends(): void
     {
-        touch(self::FLAG);
-        unlink(self::FLAG);
+        touch($this->flag());
+        $this->assertSame(503, ApiClient::anonymous()->get('Login')->getStatusCode(), 'Maintenance should be on.');
+
+        unlink($this->flag());
+
+        $this->assertNotSame(503, ApiClient::anonymous()->get('Login')->getStatusCode(), 'Maintenance should be off again.');
+        $health = json_decode((string) ApiClient::anonymous()->get('Health')->getBody(), true);
+        $this->assertFalse($health['maintenance']);
+    }
+
+    public function test_maintenance_file_setting_replaces_the_default_location(): void
+    {
+        if (!getenv('MAINTENANCE_FILE')) {
+            $this->markTestSkipped('MAINTENANCE_FILE is not set; run via tests/run-tests.sh.');
+        }
+
+        // With MAINTENANCE_FILE set, a maintenance.on next to index.php (for
+        // example left in an old release folder) must not switch the site off.
+        touch(self::DEFAULT_FLAG);
 
         $this->assertNotSame(503, ApiClient::anonymous()->get('Login')->getStatusCode());
+        $health = json_decode((string) ApiClient::anonymous()->get('Health')->getBody(), true);
+        $this->assertFalse($health['maintenance']);
     }
 }
