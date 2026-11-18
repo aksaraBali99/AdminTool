@@ -24,8 +24,12 @@ ob_start(function ($body, $phase) use ($served_from, $uri) {
     if (!$logged) {
         $logged = true;
         $start = preg_replace('/[^\x20-\x7e]+/', ' ', substr($body, 0, 160));
-        error_log(sprintf('router: %s from %s -> HTTP %d: %s',
-            $uri, $served_from, http_response_code(), $start));
+        $opcache = function_exists('opcache_get_status') ? opcache_get_status(false) : false;
+        error_log(sprintf('router: %s from %s -> HTTP %d: %s [sapi=%s opcache.enable=%s enable_cli=%s active=%s revalidate_freq=%s]',
+            $uri, $served_from, http_response_code(), $start, PHP_SAPI,
+            var_export(ini_get('opcache.enable'), true), var_export(ini_get('opcache.enable_cli'), true),
+            is_array($opcache) && !empty($opcache['opcache_enabled']) ? 'yes' : 'no',
+            var_export(ini_get('opcache.revalidate_freq'), true)));
     }
     return $body;
 });
