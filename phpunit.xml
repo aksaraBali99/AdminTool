@@ -17,5 +17,8 @@
         <testsuite name="siswa">
             <directory>tests/Siswa</directory>
         </testsuite>
+        <testsuite name="health">
+            <directory>tests/Health</directory>
+        </testsuite>
     </testsuites>
 </phpunit>
