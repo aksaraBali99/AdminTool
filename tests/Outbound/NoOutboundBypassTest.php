@@ -24,6 +24,10 @@ final class NoOutboundBypassTest extends TestCase
         'fsockopen' => '/\b(p?fsockopen)\s*\(/i',
         'stream_socket_client' => '/\bstream_socket_client\s*\(/i',
         'file_get_contents(http...)' => '/\bfile_get_contents\s*\(\s*[\'"]https?:\/\//i',
+        'fopen/copy/file/get_headers(http...)' => '/\b(fopen|copy|file|get_headers|readfile)\s*\(\s*[\'"]https?:\/\//i',
+        'stream_context_create' => '/\bstream_context_create\s*\(/i',
+        'SoapClient' => '/\bSoapClient\b/',
+        'Guzzle' => '/\bGuzzleHttp\b/',
     ];
 
     private const SKIP_DIRS = [

@@ -17,8 +17,13 @@ case-sensitive, no trimming. `ENVIRONMENT` comes from `CI_ENV` and is
 
 - `sendWa()` makes no request at all. It returns
   `{"status":false,"reason":"NOT SENT (<environment>): WhatsApp is blocked outside production",...}`,
-  which the callers log in `reminder_tagihan` like a failed send.
+  which the callers log in `reminder_tagihan` like a failed send. That row
+  (`keterangan` starting with "NOT SENT") is the record of what wasn't sent.
 - `MY_Email::send()` sends nothing and returns `TRUE`.
+- Both also call `log_message('info', ...)` (target or recipient count and
+  message length, never the token or addresses), but `log_threshold` is `0`
+  in `application/config/config.php`, so that line is only written to
+  `application/logs/` when the threshold is raised to 3 or more.
 - `https://<site>/Health` shows `"outbound":"blocked"` (production: `"live"`).
 
 Nothing else can switch sending on: not the WhatsApp token in
@@ -33,6 +38,8 @@ the stub instead of a real message. Production ignores that variable.
 ## PROD prerequisites
 
 So that PROD keeps sending:
+
+The release steps in [RELEASING.md](RELEASING.md) include both checks.
 
 1. **Each PROD site's `.htaccess`** must contain
    `SetEnv CI_ENV production`. Check: that site's
@@ -60,7 +67,7 @@ DEV must **not** have `CI_ENV production`: it runs with `testing` and shows
 - `MyEmailTest`: outside production `MY_Email` hands nothing over to
   mail/sendmail/SMTP; in production it does.
 - `NoOutboundBypassTest`: no `curl_init`, `curl_exec`, `mail(`, `fsockopen`,
-  `stream_socket_client` or `file_get_contents('http...')` in `application/`
+  `stream_socket_client`, `stream_context_create`, `SoapClient`, Guzzle, or `file_get_contents`/`fopen`/`copy`/`file`/`get_headers`/`readfile` with an `http` URL in `application/`
   except the Fonnte call inside `sendWa()`, after its gate
   (`application/libraries/tcpdf` is skipped).
 
