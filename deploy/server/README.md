@@ -429,7 +429,7 @@ is merged, install `deploy-lib.sh` (mode 600) and `rollback.sh` (mode 700)
 first, then `deploy.sh`, then `gate.sh`, each as below, and re-run the
 refusal tests. `deploy.sh` needs `deploy-lib.sh` next to it (without it, a
 deploy is refused before anything changes). Then run drill C1 again on DEV,
-because `deploy.sh` itself changed, and the rollback drills R1–R3 (see
+because `deploy.sh` itself changed, and the rollback drills R1–R4 (see
 "Drills").
 
 **The change that added `ci_env` (EHU-0023-6):** after it
@@ -544,30 +544,39 @@ previous release:
 | --- | --- | --- |
 | R1 code only | after C1: type `code only`, release empty | green, `rolled-back-manual`; Health shows the previous release's commit; database as the baseline |
 | R2 code and database | deploy a throwaway branch whose migration adds a table and changes one row of an unused table (and succeeds), then type `code and database`, release empty | green, `rolled-back-manual`; a `pre-rollback-…` backup (mode 600); the table gone, the row and the migration version as before the deploy |
-| R3 refusals | `confirm` other than the site; `code only` after a deploy like R2's; `code and database` right after R1 (the live release came from a rollback) | each stopped or refused (`failed`) with its message, nothing changed |
+| R3 refusals | `confirm` other than the site; `code and database` right after R1 (the live release came from a rollback); `code only` forward to a kept release that needs migrations; `code only` after a deploy like R2's (the database is ahead of the previous release); a release from before the WhatsApp/email guard, if one is still kept | each stopped or refused (`failed`) with its message, nothing changed |
+| R4 Health fails | after a deploy like R2's: turn automatic deploys off (`DEPLOY_DEV_ENABLED=false`), back up `bin/sites/<site>.conf` and add `health_url=https://<domain>/index.php/<a page that doesn't exist>`, then type `code and database`, release empty; afterwards restore the site config, check Health with the real URL, turn automatic deploys back on, and roll back again (`code and database`) to clean up | red, `rollback-failed` after the Health tries (about 3 minutes of maintenance page): the code switched back and the pre-rollback backup restored automatically; maintenance off; the database as after the deploy. The clean-up rollback ends `rolled-back-manual` with the database as before the deploy |
 
 If people use the site during the drills, a checksum can differ because of
 their changes; compare with the backup the drill's deploy took instead. See
 also "Known issues" for `tagihan`.
 
-**Every PROD site must pass C1, C2, C3 and R1–R3 before it switches from
+**Every PROD site must pass C1, C2, C3 and R1–R4 before it switches from
 Hostinger's Git deploy to this one.** On PROD the drills touch real users
 and real data, so:
 
-- run them at a quiet time and announce them: C2 and C3 show the
-  maintenance page, C3 for about 3 minutes;
-- for C2, change one row of a table that site doesn't use, and look up
-  which one on that site's own database first;
+- run them at a quiet time and announce them: C2, C3 and the rollback
+  drills show the maintenance page, C3 and R4 for about 3 minutes;
+- for C2, R2 and R4, change one row of a table that site doesn't use, and
+  look up which one on that site's own database first;
+- **R2 and R4 throw away real data:** their `code and database` rollback
+  puts the database back to the drill deploy's pre-deploy backup, so
+  everything people enter between that deploy and the rollback is gone from
+  the live database (it is only in the pre-rollback backup). Run them only
+  when nobody is using the site, and keep the time between the drill deploy
+  and the rollback as short as possible;
+- on PROD, delete the drills' pre-rollback backups only after checking that
+  nothing in them is needed (on DEV they were simply deleted);
 - take the baseline right before each run;
-- C2 and C3 restore the site's database, which also changes how some
-  `tagihan.tipe` values are stored (see "Known issues"); expect that in the
-  comparison.
+- C2, C3, R2 and R4 restore the site's database, which also changes how
+  some `tagihan.tipe` values are stored (see "Known issues"); expect that in
+  the comparison.
 
-After all three drills pass on a site, delete its
+After all drills (C1–C3 and R1–R4) pass on a site, delete its
 `deploy/public_html.pre-deploy`; from then on, going back works as described
 in "Going back to Hostinger's Git deploy".
 
-### Record: DEV, 19 Nov 2026
+### Record: deploy drills, DEV, 19 Nov 2026
 
 All on `admin-dev.englishhubbali.com`, in the layout described above.
 
@@ -581,6 +590,35 @@ All on `admin-dev.englishhubbali.com`, in the layout described above.
 
 Also seen during the drills: re-running the live release ends `already-live`
 without changes, and two manual runs queue instead of overlapping.
+
+### Record: rollback drills, DEV, 19 Nov 2026
+
+After PR #31 was merged: `deploy-lib.sh`, `deploy.sh`, `rollback.sh` and
+`gate.sh` (last) installed by hand, each checked against `main` (sha256, no
+CR, `bash -n`); 9 refusal tests with the deploy key, 4 of them rollback
+forms (an unknown type, a path as target, an extra argument, a site not in
+`sites.allow`), all refused and logged. Every drill compared the database
+(table list, migration version, one row, a checksum of every table) before
+and after.
+
+| Drill | Releases | Result |
+| --- | --- | --- |
+| C1 again (`deploy.sh` changed) | `984635c6709d` | ✅ `success`, `previous=d0b6bba3091b` recorded, token step "0 row(s) changed", the previous release kept, about 4 s of maintenance; database as the baseline |
+| R1 code only, back | `984635c6709d` → `d0b6bba3091b` | ✅ `rolled-back-manual`, Health ok on the first try with the target's revision, about 4 s of maintenance, no pre-rollback backup; database as the baseline |
+| R1 code only, forward | `d0b6bba3091b` → `984635c6709d` | ✅ `rolled-back-manual`; database as the baseline |
+| R2 code and database | deploy `fbc518e1e68a` (adds `drill_r2_tmp`, changes `libur_nasional` row 18), then `fbc518e1e68a` → `984635c6709d` | ✅ `rolled-back-manual`; the database was named up front as going back to `pre-deploy-20261119T130811Z-fbc518e1e68a.sql.gz`; a pre-rollback backup (mode 600, complete, holding `drill_r2_tmp`); "Dropping table drill_r2_tmp"; the token step after the restore; about 4 s of maintenance; **database identical to before the deploy** (34 tables, row 18, version, all checksums) |
+| R3a wrong confirm | — | ✅ stopped at "Check the inputs" before connecting (the SSH step skipped); nothing on the server |
+| R3b code and database after a rollback | live `984635c6709d` (from R2's rollback) | ✅ refused: "The live release came from a rollback; its backup is too old to restore safely; ask a developer"; nothing changed |
+| R3c code only forward over a migration | `984635c6709d` → `fbc518e1e68a` | ✅ refused: "needs migrations the database hasn't run …; deploy a new commit instead"; nothing changed |
+| R3d code only with the database ahead | live `edf249eb7233` (R4's deploy) → `984635c6709d` | ✅ refused: "The database has migrations release 984635c6709d doesn't know …; use code and database, or ask a developer"; nothing changed |
+| R3e a release from before the guard | — | ⏭️ not possible: none was kept any more (`2029ecc1a95f` was cleaned up by the deploy of PR #31's merge). Covered by `tests/deploy/deploy-test.sh` |
+| R4 Health fails | deploy `edf249eb7233` (adds `drill_r4_tmp`, changes row 18), then `edf249eb7233` → `984635c6709d` with a `health_url` that answers no Health JSON, automatic deploys off | ✅ `rollback-failed` after 18 failed tries (about 3 minutes of maintenance): "current points back to releases/edf249eb7233", the pre-rollback backup restored automatically ("The database is back as it was before the rollback"), maintenance off, `restored=` empty; **database identical to after the deploy**. Then the site config restored, Health with the real URL ok (revision `edf249eb7233…`, maintenance false), automatic deploys back on |
+| R4 clean-up | `edf249eb7233` → `984635c6709d` | ✅ `rolled-back-manual`, "Dropping table drill_r4_tmp"; **database identical to before R4's deploy** |
+
+Afterwards the drill branches, the drills' pre-rollback backups and the
+script backups in `bin/` were deleted. DEV was left on `984635c6709d` (live
+through a rollback, so the next `code and database` needs a fresh deploy
+first).
 
 ## Known issues
 
