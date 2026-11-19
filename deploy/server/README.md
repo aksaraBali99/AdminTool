@@ -275,8 +275,8 @@ app. After any merge that changes `deploy/server/deploy.sh` or
 
 `gate.sh` is what the GitHub key runs, so a change to it takes effect on the
 next SSH connection. After replacing it, re-run the refusal tests (no
-command, `bash`, `deploy dev ../x`, `deploy prod x`) with the deploy key and
-check they appear in `bin/gate.log`.
+command, `bash`, `deploy <site> ../x`, `deploy <a site not in sites.allow> x`)
+with the deploy key and check they appear in `bin/gate.log`.
 
 To see whether the installed scripts are current, compare their sha256 with
 the files on `main`.
@@ -284,35 +284,56 @@ the files on `main`.
 ## Going back to Hostinger's Git deploy
 
 The old `public_html` folder (`deploy/public_html.pre-deploy`) is deleted
-once the drills pass, so going back means turning the live release into a
-plain folder and letting Hostinger's Git deploy take over again. Example
-for DEV:
+once the drills pass, so going back takes two parts: first make the live
+release a plain folder (a working fallback that needs neither `deploy/` nor
+this deploy), then let Hostinger's Git deploy fill `public_html` again.
+Example for DEV.
+
+**Part 1: the live release as a plain folder.** Make sure no deploy is
+running first.
 
 ```sh
 cd ~/domains/admin-dev.englishhubbali.com
 # A self-contained copy of the live release: -L turns the .htaccess and
 # uploads links into real files.
-cp -aL deploy/current public_html.git
+cp -aL deploy/current public_html.copy
 # Without REVISION, Health shows "revision":"unknown" instead of a commit
-# that Hostinger's deploys would no longer match.
-rm public_html.git/REVISION
+# that nothing deploys any more.
+rm public_html.copy/REVISION
 # MAINTENANCE_FILE points into deploy/, which is going away.
-sed -i '/SetEnv[[:space:]]\+MAINTENANCE_FILE/d' public_html.git/.htaccess
+sed -i '/SetEnv[[:space:]]\+MAINTENANCE_FILE/d' public_html.copy/.htaccess
 # The site is unavailable for the moment between these two commands.
-rm public_html && mv public_html.git public_html
+rm public_html && cp -a public_html.copy public_html
 ```
 
-Then:
+Check `https://<domain>/index.php/Health` says `"status":"ok"` and the login
+page loads. The site now runs from a plain folder; `public_html.copy` stays
+as the copy to come back to.
 
-1. Check `https://<domain>/index.php/Health` says `"status":"ok"` and the
-   login page loads.
-2. In hPanel, connect the site's Git deployment again (repository, branch
-   `main`, into `public_html`), deploy once and turn auto-deploy back on.
-   Check Health again afterwards.
-3. Remove the deploy key's line from `~/.ssh/authorized_keys` and the site
+**Part 2: Hostinger's Git deploy.** The copy has no `.git` folder (releases
+never contain one), so Hostinger can't just pull into it, and as far as we
+know hPanel only sets up a Git deployment into an **empty** folder. Check
+that in hPanel before you start. If it's so, the site is down from step 1
+until step 4:
+
+1. `rm -rf public_html && mkdir public_html` (the copy is in
+   `public_html.copy`).
+2. In hPanel > Git, set up the site's repository again (branch `main`, into
+   `public_html`) and deploy.
+3. Put the site's own files back from the copy:
+   `cp -p public_html.copy/.htaccess public_html/.htaccess` and
+   `rsync -a public_html.copy/uploads/ public_html/uploads/`.
+4. Check Health and the login page, then turn auto-deploy back on.
+
+If the Hostinger deploy fails, go back to the copy:
+`rm -rf public_html && cp -a public_html.copy public_html`.
+
+Afterwards:
+
+1. Remove the deploy key's line from `~/.ssh/authorized_keys` and the site
    from `~/apps/<app>/bin/sites.allow` and `bin/sites/<site>.conf`.
-4. Delete `deploy/` and `~/apps/<app>/backups/<site>/` once nothing in them
-   is needed. Uploads made since the switch are in the copied `uploads/`.
+2. Delete `public_html.copy`, `deploy/` and `~/apps/<app>/backups/<site>/`
+   once nothing in them is needed.
 
 ## Drills
 
@@ -337,7 +358,21 @@ their changes; compare with the backup the drill's deploy took instead. See
 also "Known issues" for `tagihan`.
 
 **Every PROD site must pass C1, C2 and C3 before it switches from
-Hostinger's Git deploy to this one.**
+Hostinger's Git deploy to this one.** On PROD the drills touch real users
+and real data, so:
+
+- run them at a quiet time and announce them: C2 and C3 show the
+  maintenance page, C3 for about 3 minutes;
+- for C2, change one row of a table that site doesn't use, and look up
+  which one on that site's own database first;
+- take the baseline right before each run;
+- C2 and C3 restore the site's database, which also changes how some
+  `tagihan.tipe` values are stored (see "Known issues"); expect that in the
+  comparison.
+
+After all three drills pass on a site, delete its
+`deploy/public_html.pre-deploy`; from then on, going back works as described
+in "Going back to Hostinger's Git deploy".
 
 ### Record: DEV, 19 Nov 2026
 
@@ -359,8 +394,9 @@ without changes, and two manual runs queue instead of overlapping.
 - **Restoring a backup changes how some `tagihan.tipe` values are stored.**
   `tagihan.tipe` is `enum('Biaya Kelas','Biaya Registrasi','Biaya Buku','')`.
   For invoices with mixed item types the app writes a combined value (e.g.
-  "Biaya Kelas, Biaya Buku"), which isn't one of the options; the database
-  runs without strict SQL mode, so it stores MySQL's error value (index 0,
+  "Biaya Kelas, Biaya Buku"), which isn't one of the options; DEV's database
+  runs without strict SQL mode (PROD's probably too; not checked), and the
+  app sets `stricton => FALSE`, so it stores MySQL's error value (index 0,
   shown as `''`). A dump writes it as `''`, so after a restore it is the
   real `''` option (index 4). The page looks the same and `WHERE tipe = ''`
   matches both, but `tipe+0`, sorting and grouping by `tipe`, and
