@@ -96,7 +96,12 @@ mkdir -p "$SITE_DIR"/{releases,shared/uploads/logo,shared/uploads/karyawan,logs}
 cp "$REPO/deploy/server/deploy.sh" "$BIN/"
 chmod 700 "$BIN/deploy.sh"
 echo '<?php echo "OLD SITE";' > "$PUBLIC_HTML/index.php"
-printf 'domain=dev.test\nhealth_url=%s/index.php/Health\n' "$SITE_URL" > "$SITE_CONF"
+# site_conf [health_url] [ci_env] : writes the site config (defaults: the test
+# site's Health, ci_env=testing).
+site_conf() {
+    printf 'domain=dev.test\nhealth_url=%s\nci_env=%s\n' "${1:-$SITE_URL/index.php/Health}" "${2:-testing}" > "$SITE_CONF"
+}
+site_conf
 cat > "$SITE_DIR/shared/.htaccess" <<EOF
 # Like a real site's .htaccess: settings inside a block, a commented-out line.
 <IfModule mod_env.c>
@@ -121,6 +126,12 @@ echo "Building the live database with the current migrations"
 (cd "$REPO" && DB_HOST="$TEST_DB_HOST" DB_PORT="$TEST_DB_PORT" DB_USER="$DB_USER" DB_PASS="$DB_PASS" \
     DB_NAME="$DB" CI_ENV=testing "$PHP_BIN" index.php migrate)
 BASE_VERSION="$(sql 'SELECT version FROM migrations')"
+# A WhatsApp token, as a DEV database copied from PROD would have one. Deploys
+# to a site whose ci_env isn't production must overwrite it.
+WA_TOKEN='wa-token-from-prod-must-not-survive-7x9q'
+sql "INSERT INTO data_konfig (id_konfig, nama_apk, token_wa, logo) VALUES (0, 'Deploy Test', '$WA_TOKEN', '')"
+token_wa() { sql 'SELECT token_wa FROM data_konfig WHERE id_konfig = 0'; }
+FORCE_CI_ENV="$WORK/force-ci-env"
 
 # The site as the web server would run it: settings from the environment
 # (SetEnv), docroot = whatever public_html points to now.
@@ -134,6 +145,7 @@ BASE_VERSION="$(sql 'SELECT version FROM migrations')"
 # tries, and by checking Health reports the new release's revision.
 DB_HOST="$TEST_DB_HOST" DB_PORT="$TEST_DB_PORT" DB_USER="$DB_USER" DB_PASS="$DB_PASS" DB_NAME="$DB" \
     CI_ENV=testing MAINTENANCE_FILE="$MAINT" DEPLOY_TEST_DOCROOT="$PUBLIC_HTML" \
+    DEPLOY_TEST_FORCE_CI_ENV_FILE="$FORCE_CI_ENV" \
     "$PHP_BIN" -d realpath_cache_size=0 -d opcache.enable=0 \
     -S "127.0.0.1:$PORT" -t "$WORK" "$REPO/tests/deploy/router.php" \
     > "$WORK/server.log" 2>&1 &
@@ -318,6 +330,9 @@ backup="$(find "$BACKUP_DIR" -name 'pre-deploy-*-r1.sql.gz')"
 check "a pre-deploy backup exists, mode 600" '[ -n "$backup" ] && [ "$(stat -c %a "$backup")" = 600 ]'
 check "the backup is a complete dump" 'gzip -dc "$backup" | tail -n1 | grep -q "Dump completed"'
 check "history.log has a success line" 'grep -q " site=dev release=r1 sha=$(git -C "$REPO" rev-parse HEAD) version=.* backup=pre-deploy-.*-r1.sql.gz result=success\$" "$SITE_DIR/logs/history.log"'
+check "Health was checked for outbound 'blocked' (ci_env=testing)" 'grep -q "f. Health ok .*outbound='\''blocked'\''" "$SITE_DIR/logs/deploy.log"'
+check "the WhatsApp token is overwritten (ci_env=testing)" '[ "$(token_wa)" = DISABLED-NON-PROD ]'
+check "...and the log says so" 'grep -q "\[dev r1\] d. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=testing; 1 row(s) changed)" "$SITE_DIR/logs/deploy.log"'
 
 # --------------------------------------------------------------- 3. deploy with a migration
 echo
@@ -352,8 +367,10 @@ echo "4b. Deploy with a broken migration and CI_ENV=production (db_debug off)"
 cp "$SITE_DIR/shared/.htaccess" "$WORK/htaccess.testing"
 sed -i 's/SetEnv CI_ENV testing/SetEnv CI_ENV production/' "$SITE_DIR/shared/.htaccess"
 prep "the shared .htaccess says CI_ENV production" grep -q "SetEnv CI_ENV production" "$SITE_DIR/shared/.htaccess"
+site_conf "" production
 deploy r3p "$WORK/prod-broken.tar.gz"
 cp "$WORK/htaccess.testing" "$SITE_DIR/shared/.htaccess"
+site_conf
 check "exits non-zero" '[ "$rc" -ne 0 ]'
 check "reports rolled-back" 'result_is r3p rolled-back'
 check "says the migration failed" 'grep -q '\''ERROR: Migrations failed'\'' <<< "$out"'
@@ -391,7 +408,7 @@ check "after the fix by hand: version is r2's, maintenance off, Health ok" \
 echo
 echo "5. Deploy whose health check fails"
 cp "$SITE_CONF" "$WORK/site.conf.good"
-printf 'domain=dev.test\nhealth_url=http://127.0.0.1:9/index.php/Health\n' > "$SITE_CONF"
+site_conf http://127.0.0.1:9/index.php/Health
 prep "set deploy_probe.note to 'kept'" sql "UPDATE deploy_probe SET note = 'kept' WHERE id = 1"
 TRIES=2 deploy r4 "$WORK/probe.tar.gz"
 cp "$WORK/site.conf.good" "$SITE_CONF"
@@ -460,6 +477,31 @@ check "a site without a site config is refused" '[ "$rc" -ne 0 ] && result_is r5
 cp "$WORK/site.conf.good" "$SITE_CONF"
 check "...and r2 is still live" '[ "$(live_release)" = releases/r2 ] && [ ! -e "$SITE_DIR/releases/r5" ]'
 
+# ci_env in the site config: required, exactly one of three values, and the
+# same as CI_ENV in shared/.htaccess. Refused before anything changes.
+token_before="$(token_wa)"
+refused_unchanged() { [ "$rc" -ne 0 ] && result_is r5 failed && [ ! -e "$SITE_DIR/releases/r5" ] && [ ! -e "$MAINT" ] && [ "$(live_release)" = releases/r2 ]; }
+printf 'domain=dev.test\nhealth_url=%s/index.php/Health\n' "$SITE_URL" > "$SITE_CONF"
+deploy r5 "$WORK/probe.tar.gz"
+check "a site config without ci_env is refused, nothing changed" 'refused_unchanged && grep -q "has no ci_env=; add ci_env=production, ci_env=testing or ci_env=development" <<< "$out"'
+site_conf "" staging
+deploy r5 "$WORK/probe.tar.gz"
+check "ci_env=staging is refused" 'refused_unchanged && grep -q "has ci_env=staging; it must be exactly production, testing or development" <<< "$out"'
+site_conf "" Production
+deploy r5 "$WORK/probe.tar.gz"
+check "ci_env=Production (wrong case) is refused" 'refused_unchanged && grep -q "has ci_env=Production; it must be exactly" <<< "$out"'
+site_conf "" production
+deploy r5 "$WORK/probe.tar.gz"
+check "ci_env=production while .htaccess says testing is refused" 'refused_unchanged && grep -q "CI_ENV in shared/.htaccess is '\''testing'\'' but .*sites/dev.conf says ci_env=production; make them the same" <<< "$out"'
+site_conf
+cp "$SITE_DIR/shared/.htaccess" "$WORK/htaccess.good"
+sed -i 's/SetEnv CI_ENV testing/SetEnv CI_ENV staging-secret-ish/' "$SITE_DIR/shared/.htaccess"
+deploy r5 "$WORK/probe.tar.gz"
+cp "$WORK/htaccess.good" "$SITE_DIR/shared/.htaccess"
+check "an unknown CI_ENV in .htaccess is refused" 'refused_unchanged && grep -q "CI_ENV in shared/.htaccess is another value but" <<< "$out"'
+check "...without logging that value" '! grep -q "staging-secret-ish" <<< "$out" && ! grep -q "staging-secret-ish" "$SITE_DIR/logs/deploy.log"'
+check "the refused deploys left the database alone" '[ "$(token_wa)" = "$token_before" ]'
+
 # The live release still linked to the shared files of the folder it was
 # copied from (an old layout): a rollback would land on those.
 mkdir -p "$WORK/old-shared/uploads" && cp "$SITE_DIR/shared/.htaccess" "$WORK/old-shared/.htaccess"
@@ -504,10 +546,43 @@ check "the newest 3 releases are kept" '[ "$(cd "$SITE_DIR/releases" && ls | sor
 check "the newest 5 backups are kept" '[ "$(backup_count)" = 5 ]'
 check "the newest backup is r7's" '[ "$(cd "$BACKUP_DIR" && ls | sort | tail -n1)" = "$(cd "$BACKUP_DIR" && ls *-r7.sql.gz)" ]'
 
+# --------------------------------------------------------------- 7b. production site
+echo
+echo "7b. A production site: the token stays, Health must say outbound 'live'"
+prep "put a WhatsApp token back" sql "UPDATE data_konfig SET token_wa = '$WA_TOKEN' WHERE id_konfig = 0"
+cp "$SITE_DIR/shared/.htaccess" "$WORK/htaccess.testing"
+sed -i 's/SetEnv CI_ENV testing/SetEnv CI_ENV production/' "$SITE_DIR/shared/.htaccess"
+site_conf "" production
+deploy r8 "$WORK/probe.tar.gz"
+check "deploys" '[ "$rc" -eq 0 ] && result_is r8 success && [ "$(live_release)" = releases/r8 ]'
+check "Health was checked for outbound 'live'" 'grep -q "\[dev r8\] f. Health ok .*outbound='\''live'\''" "$SITE_DIR/logs/deploy.log"'
+check "the WhatsApp token is left alone" '[ "$(token_wa)" = "$WA_TOKEN" ] && ! grep -q "\[dev r8\] d. WhatsApp token" "$SITE_DIR/logs/deploy.log"'
+
+# The web server ignores the site's SetEnv CI_ENV, so the app runs as
+# 'testing' and blocks sending: on a production site that must fail Health.
+echo testing > "$FORCE_CI_ENV"
+TRIES=2 deploy r9 "$WORK/probe.tar.gz"
+rm -f "$FORCE_CI_ENV"
+check "a production site whose Health says outbound 'blocked' rolls back" '[ "$rc" -ne 0 ] && result_is r9 rolled-back && grep -q "ERROR: Health check failed" <<< "$out"'
+check "...saying which outbound it wanted" 'grep -q "outbound='\''blocked'\''; want version .*, outbound '\''live'\''" <<< "$out"'
+check "...with r8 live again and maintenance off" '[ "$(live_release)" = releases/r8 ] && [ ! -e "$MAINT" ] && [ ! -e "$SITE_DIR/releases/r9" ]'
+check "...and the token as before" '[ "$(token_wa)" = "$WA_TOKEN" ]'
+
+# And the other way round: a testing site that comes up as production.
+cp "$WORK/htaccess.testing" "$SITE_DIR/shared/.htaccess"
+site_conf
+echo production > "$FORCE_CI_ENV"
+TRIES=2 deploy r10 "$WORK/probe.tar.gz"
+rm -f "$FORCE_CI_ENV"
+check "a testing site whose Health says outbound 'live' rolls back" '[ "$rc" -ne 0 ] && result_is r10 rolled-back && grep -q "outbound='\''live'\''; want version .*, outbound '\''blocked'\''" <<< "$out"'
+check "...and the restore puts the token back as it was before that deploy" '[ "$(token_wa)" = "$WA_TOKEN" ] && grep -q "\[dev r10\] d. WhatsApp token in data_konfig set to DISABLED-NON-PROD" "$SITE_DIR/logs/deploy.log"'
+check "...with r8 live and Health ok" '[ "$(live_release)" = releases/r8 ] && health_ok'
+
 # --------------------------------------------------------------- 8. secrets
 echo
 echo "8. No secrets left or logged"
 check "the password is in no log or output, the web server's log included" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT" "$WORK/server.log"'
+check "the WhatsApp token is in no log or output" '! grep -rqF "$WA_TOKEN" "$SITE_DIR/logs" "$ALL_OUTPUT" "$WORK/server.log"'
 check "no temporary option, health, error-output, restore or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 \( -name '\''.db-options.*'\'' -o -name '\''.health.*'\'' -o -name '\''.stderr.*'\'' -o -name '\''.restore.*'\'' -o -name '\''.incoming-*'\'' \))" ]'
 check "the database name and user are in no log or output (masked)" '! grep -rqF -e "$DB" -e "$DB_USER" "$SITE_DIR/logs" "$ALL_OUTPUT"'
 # The server has no /dev/fd, so process substitution fails there (it made the

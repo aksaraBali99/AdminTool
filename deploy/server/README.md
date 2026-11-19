@@ -24,6 +24,7 @@ Two kinds of folders:
 ~/apps/admintool/                     one folder per app
     bin/                              gate.sh, deploy.sh (mode 700), sites.allow, gate.log
         sites/dev.conf                domain=admin-dev.englishhubbali.com
+                                      ci_env=testing
     backups/dev/                      pre-deploy-<UTC time>-<id>.sql.gz
                                       (mode 600; the newest 5 are kept)
 
@@ -64,8 +65,8 @@ also has a `REVISION` file with the full sha.
 ## What a deploy does
 
 `deploy.sh <site> <release-id>` reads the tarball from stdin. It reads the
-site's domain from `bin/sites/<site>.conf` and takes a lock, so two deploys
-of one site never overlap. Then:
+site's `domain` and `ci_env` from `bin/sites/<site>.conf` and takes a lock,
+so two deploys of one site never overlap. Then:
 
 1. **Checks** the layout and the settings in `shared/.htaccess`. It refuses
    if maintenance is already on, if `MAINTENANCE_FILE` isn't in `shared/`,
@@ -73,6 +74,16 @@ of one site never overlap. Then:
    site's `shared/` (e.g. a release copied from another folder with its old
    links), or if the release id already exists. If that release is the live one (a
    re-run), it changes nothing and ends with result `already-live`.
+
+   It also refuses, before changing anything, unless the site config has
+   `ci_env=` set to exactly `production`, `testing` or `development`, **and**
+   `SetEnv CI_ENV` in `shared/.htaccess` says the same. The site config says
+   what the site must be; the `.htaccess` says what the app actually runs
+   as. A copied or half-edited `.htaccess` can't turn DEV into a site that
+   sends real WhatsApp messages (only `production` sends, see
+   `docs/OUTBOUND_MESSAGES.md`), nor PROD into one that silently doesn't.
+   The message says what to fix. From the `.htaccess` it only ever names
+   one of those three values, never anything else.
 2. **Unpacks** into `releases/<id>/` and links in the shared `.htaccess` and
    `uploads/`.
 3. **Turns maintenance on**: creates the `MAINTENANCE_FILE`. On the very
@@ -83,12 +94,26 @@ of one site never overlap. Then:
    --triggers`, gzipped) into `~/apps/<app>/backups/<site>/`. The backup
    must pass `gzip -t`, be at least 1 KB and end with mysqldump's "Dump
    completed" line.
-5. **Migrates**: `php index.php migrate` in the new release.
+5. **Migrates**: `php index.php migrate` in the new release. Then, **only
+   where `ci_env` isn't `production`**, it overwrites the WhatsApp token:
+   `UPDATE data_konfig SET token_wa = 'DISABLED-NON-PROD'`, logged as
+   "WhatsApp token in data_konfig set to DISABLED-NON-PROD". A DEV database
+   is often a copy of PROD's, with PROD's real token in it; the app never
+   sends outside production anyway, and this makes the token unusable from
+   that database too. A failure here fails the deploy and rolls back like
+   any other step. If the deploy rolls back later, the restore puts the
+   database back as it was before the deploy, token included. If email/SMTP
+   settings are ever stored in the database, `deploy.sh` must clear them in
+   the same place.
 6. **Switches** `current` to the new release, atomically (`ln -s` + `mv -T`).
 7. **Checks Health**: `https://<domain>/index.php/Health` must say
    `"status":"ok"`, the release's `VERSION` and its `REVISION` (full commit
-   sha). That shows the new release is what the site actually serves, not an
-   older folder or a cached page. It tries for about 3 minutes (18 times,
+   sha), and `"outbound":"live"` where `ci_env` is `production`,
+   `"outbound":"blocked"` everywhere else. That shows the new release is
+   what the site actually serves, not an older folder or a cached page, and
+   that it runs as the kind of site it should: a PROD site whose web server
+   ignores its `SetEnv CI_ENV production` would answer `"blocked"` and
+   silently stop sending, so the deploy rolls back instead. It tries for about 3 minutes (18 times,
    10 s apart), because PHP workers may keep running the old release for a
    while: PHP's realpath cache can resolve the old folder for up to 2
    minutes, and opcache can reuse the old compiled files until it next
@@ -154,7 +179,8 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
    ```sh
    D=~/domains/admin-dev.englishhubbali.com
    echo dev >> ~/apps/admintool/bin/sites.allow
-   echo domain=admin-dev.englishhubbali.com > ~/apps/admintool/bin/sites/dev.conf
+   printf 'domain=admin-dev.englishhubbali.com\nci_env=testing\n' > ~/apps/admintool/bin/sites/dev.conf
+   chmod 600 ~/apps/admintool/bin/sites/dev.conf
    mkdir -p ~/apps/admintool/backups/dev "$D/deploy/releases" "$D/deploy/shared" "$D/deploy/logs"
    chmod 700 ~/apps/admintool/backups/dev "$D/deploy/logs"
    ```
@@ -172,7 +198,9 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
    The web server must be able to read `.htaccess`, so it is 644, not 600.
    The deploy reads `DB_HOST`, `DB_PORT` (optional), `DB_USER`, `DB_PASS`,
    `DB_NAME`, `CI_ENV` and `MAINTENANCE_FILE` from it. `MAINTENANCE_FILE`
-   must be an absolute path in `deploy/shared/`.
+   must be an absolute path in `deploy/shared/`. `SetEnv CI_ENV` must match
+   `ci_env` in `bin/sites/<site>.conf` (step 2): `testing` for DEV,
+   `production` for a PROD site.
 
 4. The app's GitHub key (once per app). Make a new ed25519 key pair with no
    passphrase, used only for this app. Add its public key to
@@ -221,7 +249,10 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
 ## Logs
 
 - `~/domains/<domain>/deploy/logs/deploy.log`: every step, e.g.
-  `2026-11-18T05:05:02Z [dev 80bc554e1a2b] c. Backup pre-deploy-...sql.gz (48213 bytes)`.
+  `2026-11-18T05:05:02Z [dev 80bc554e1a2b] c. Backup pre-deploy-...sql.gz (48213 bytes)`,
+  and on a site that isn't production
+  `... d. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=testing; 1 row(s) changed)`
+  (`0 row(s)` once it already was).
 - `~/domains/<domain>/deploy/logs/history.log`: one line per deploy, e.g.
   `2026-11-18T05:05:40Z site=dev release=80bc554e1a2b sha=80bc554... version=1.1.1 backup=pre-deploy-20261118T050505Z-80bc554e1a2b.sql.gz result=success`.
   The result is `success`, `already-live` (re-run, nothing changed),
@@ -254,7 +285,12 @@ Over SSH, with `S=~/domains/<domain>/deploy`:
 ## Updating the server scripts
 
 A deploy never updates `deploy.sh` or `gate.sh` themselves: it only ships the
-app. After any merge that changes `deploy/server/deploy.sh` or
+app. **That includes the change that added `ci_env` (EHU-0023-6):** after it
+is merged, `bin/deploy.sh` must be copied to the server by hand as below,
+and **first** each site's `bin/sites/<site>.conf` needs its `ci_env=` line
+(`ci_env=testing` in `dev.conf`). In that order nothing breaks: the old
+`deploy.sh` ignores the new line, and the new one refuses (changing nothing)
+on a site without it. After any merge that changes `deploy/server/deploy.sh` or
 `deploy/server/gate.sh`, install them by hand into `~/apps/<app>/bin/`
 (example for `deploy.sh`; `gate.sh` the same way):
 

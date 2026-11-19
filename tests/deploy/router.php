@@ -16,7 +16,20 @@
 $docroot = getenv('DEPLOY_TEST_DOCROOT');
 clearstatcache(true);
 
-$_SERVER['CI_ENV'] = 'testing';
+// CI_ENV as the real web server sets it: from "SetEnv CI_ENV" in the served
+// release's .htaccess (the site's shared one), 'testing' without one (the
+// old pre-deploy site). The file named by DEPLOY_TEST_FORCE_CI_ENV_FILE, if
+// it exists, overrides that, to act like a server that ignores the SetEnv.
+$ci_env = 'testing';
+$htaccess = $docroot . '/.htaccess';
+if (is_file($htaccess) && preg_match('/^\s*SetEnv\s+CI_ENV\s+"?([^"\s]+)"?\s*$/mi', (string) file_get_contents($htaccess), $m)) {
+    $ci_env = $m[1];
+}
+$force = getenv('DEPLOY_TEST_FORCE_CI_ENV_FILE');
+if (is_string($force) && $force !== '' && is_file($force)) {
+    $ci_env = trim((string) file_get_contents($force));
+}
+$_SERVER['CI_ENV'] = $ci_env;
 $_SERVER['SCRIPT_NAME'] = '/index.php';
 $_SERVER['SCRIPT_FILENAME'] = $docroot . '/index.php';
 

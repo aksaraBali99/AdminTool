@@ -72,3 +72,16 @@ DEV must **not** have `CI_ENV production`: it runs with `testing` and shows
   (`application/libraries/tcpdf` is skipped).
 
 `tests/Health` also checks `"outbound":"blocked"` on the test server.
+
+## The SSH deploy
+
+`deploy/server/deploy.sh` (used for DEV) adds three checks of its own; see
+`deploy/server/README.md`:
+
+- it refuses to deploy unless `ci_env=` in the site's
+  `bin/sites/<site>.conf` is `production`, `testing` or `development` and
+  matches `SetEnv CI_ENV` in the site's `.htaccess`;
+- where `ci_env` isn't `production`, it sets `data_konfig.token_wa` to
+  `DISABLED-NON-PROD` after migrations;
+- Health must show `"outbound":"live"` on a production site and `"blocked"`
+  anywhere else, or the deploy rolls back.
