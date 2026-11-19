@@ -222,7 +222,9 @@ class Migration_Prod_broken extends CI_Migration
 {
     public function up()
     {
+        // Two new tables: the rollback must drop both, not just the first.
         $this->db->query("CREATE TABLE deploy_prod_tmp (id int)");
+        $this->db->query("CREATE TABLE deploy_prod_tmp2 (id int)");
         $this->db->query("SELECT * FROM no_such_table");
     }
     public function down() {}
@@ -275,8 +277,8 @@ check "migrate exits non-zero (got $prod_rc)" '[ "$prod_rc" -ne 0 ]'
 check "...because of the failed query" 'grep -q "no_such_table" <<< "$prod_out"'
 check "the migration version is not bumped" '[ "$(sql '\''SELECT version FROM migrations'\'')" = "$BASE_VERSION" ]'
 check "the migration after the broken one did not run" '! table_exists deploy_after_tmp'
-check "(the broken one ran up to its bad query)" 'table_exists deploy_prod_tmp'
-prep "drop the table the broken migration left" sql "DROP TABLE IF EXISTS deploy_prod_tmp"
+check "(the broken one ran up to its bad query)" 'table_exists deploy_prod_tmp && table_exists deploy_prod_tmp2'
+prep "drop the tables the broken migration left" sql "DROP TABLE IF EXISTS deploy_prod_tmp, deploy_prod_tmp2"
 
 # --------------------------------------------------------------- 1. first deploy fails
 echo
@@ -355,12 +357,35 @@ cp "$WORK/htaccess.testing" "$SITE_DIR/shared/.htaccess"
 check "exits non-zero" '[ "$rc" -ne 0 ]'
 check "reports rolled-back" 'result_is r3p rolled-back'
 check "says the migration failed" 'grep -q '\''ERROR: Migrations failed'\'' <<< "$out"'
-check "drops the table the broken migration added" 'grep -q "Dropping table deploy_prod_tmp (not in the backup)" <<< "$out" && ! table_exists deploy_prod_tmp'
+check "drops both tables the broken migration added" 'grep -q "Dropping table deploy_prod_tmp (not in the backup)" <<< "$out" && grep -q "Dropping table deploy_prod_tmp2 (not in the backup)" <<< "$out" && ! table_exists deploy_prod_tmp && ! table_exists deploy_prod_tmp2'
 check "the migration after the broken one did not run" '! table_exists deploy_after_tmp'
 check "the migration version is back to r2'\''s" '[ "$(sql '\''SELECT version FROM migrations'\'')" = 29991231000000 ]'
 check "current points back to releases/r2" '[ "$(live_release)" = releases/r2 ]'
 check "maintenance is off" '[ ! -e "$MAINT" ]'
 check "Health is ok" 'health_ok'
+
+# --------------------------------------------------------------- 4c. restore can't drop
+echo
+echo "4c. Rollback that can't drop the new tables: rollback-incomplete, maintenance left on"
+# Without DROP, the restore can't remove what the failed migration added. It
+# must say so and keep maintenance on, never claim "Database restored".
+prep "take DROP away from the site's database user" admin_sql -e "REVOKE DROP ON $DB.* FROM '$DB_USER'@'%'"
+deploy r3q "$WORK/prod-broken.tar.gz"
+prep "give DROP back" admin_sql -e "GRANT DROP ON $DB.* TO '$DB_USER'@'%'"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rollback-incomplete" 'result_is r3q rollback-incomplete'
+check "says it could not drop the table" 'grep -q "Could not drop table deploy_prod_tmp" <<< "$out"'
+check "...with the database error, masked" 'grep -q "mysql: .*<db-user>" <<< "$out"'
+check "never claims the database was restored" '! grep -q "Database restored" <<< "$out"'
+check "leaves maintenance on" '[ -e "$MAINT" ] && grep -q "maintenance is left ON" <<< "$out"'
+check "the site shows the maintenance page (503)" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 503 ]'
+check "current still points to releases/r2" '[ "$(live_release)" = releases/r2 ]'
+# Fixed by hand, as in the README ("When a rollback is incomplete"): here
+# only the added tables need to go; the migration changed no data.
+prep "drop the added tables by hand" sql "DROP TABLE IF EXISTS deploy_prod_tmp, deploy_prod_tmp2"
+rm -f "$MAINT"
+check "after the fix by hand: version is r2's, maintenance off, Health ok" \
+    '[ "$(sql '\''SELECT version FROM migrations'\'')" = 29991231000000 ] && [ ! -e "$MAINT" ] && health_ok'
 
 # --------------------------------------------------------------- 5. failed health check
 echo

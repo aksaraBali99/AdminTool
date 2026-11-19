@@ -122,7 +122,9 @@ database name, user and password with `<db>`, `<db-user>` and
 Migrations stop at the first failed query in every environment, production
 included: the `Migrate` controller turns `db_debug` on for its run, so a
 failed query ends `php index.php migrate` with a non-zero exit before the
-migration is recorded as applied.
+migration is recorded as applied. That covers queries on the app's default
+database connection (`$this->db`); a migration that opens a second
+connection must turn `db_debug` on for it too.
 
 The server has no `/dev/fd`, so the scripts must not use bash process
 substitution (`<(...)`); `tests/deploy/deploy-test.sh` checks this.

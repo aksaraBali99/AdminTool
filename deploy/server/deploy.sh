@@ -227,7 +227,9 @@ restore_database() {
             say "A table with an unusual name isn't in the backup; drop it by hand"; return 1
         fi
         say "Dropping table $t (not in the backup)"
-        if ! mysql --defaults-extra-file="$OPT" -e "SET FOREIGN_KEY_CHECKS=0; DROP TABLE \`$t\`" "$DB_NAME" 2> "$ERRF"; then
+        # stdin from /dev/null: the loop reads the table list on stdin, and
+        # mysql must not swallow the rest of it.
+        if ! mysql --defaults-extra-file="$OPT" -e "SET FOREIGN_KEY_CHECKS=0; DROP TABLE \`$t\`" "$DB_NAME" < /dev/null 2> "$ERRF"; then
             log_errfile mysql; say "Could not drop table $t"; return 1
         fi
     done < "$RESTORE_WORK/extra"
