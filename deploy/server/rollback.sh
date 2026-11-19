@@ -220,6 +220,7 @@ VERSION="$(release_version "$TARGET")"
 SHA="$(release_revision "$TARGET")"
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { SHA="-"; die "Release $TO's REVISION is not a full commit sha"; }
 
+new_errfile || die "Could not create a file for error output"
 db_version="$(db_migration_version)" && [ -n "$db_version" ] \
     || die "Could not read the database's migration version"
 target_migration="$(release_migration_version "$TARGET")"

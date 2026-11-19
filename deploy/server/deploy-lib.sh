@@ -202,8 +202,12 @@ write_option_file() {
 }
 
 # The newest migration the database has run (prints nothing on failure).
+# Meant to be called as v="$(db_migration_version)", i.e. in a subshell, so
+# it doesn't create ERRF itself (the caller couldn't remove a file made
+# there): call new_errfile first.
 db_migration_version() {
-    new_errfile || return 1
+    [ -n "$ERRF" ] || return 1
+    : > "$ERRF"
     local v
     v="$(mysql --defaults-extra-file="$OPT" -N -B -e "SELECT version FROM migrations" "$DB_NAME" < /dev/null 2> "$ERRF")" \
         || { log_errfile mysql; return 1; }
