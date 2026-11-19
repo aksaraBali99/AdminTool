@@ -750,11 +750,12 @@ echo production > "$FORCE_CI_ENV"
 TRIES=2 rollback previous code-db
 rm -f "$FORCE_CI_ENV"
 check "code and database, Health fails: restores the pre-rollback backup and switches back" '[ "$rc" -ne 0 ] && rb_result_is code-db r12 r8 rollback-failed && [ "$(live_release)" = releases/r12 ] && grep -q "The database is back as it was before the rollback" <<< "$out"'
-check "...the database is r12'\''s again, maintenance off" 'table_exists rollback_probe_7 && [ "$(note)" = after-7 ] && [ "$(db_version)" = 29991231000007 ] && [ ! -e "$MAINT" ]'
+check "...the database is r12's again, maintenance off" 'table_exists rollback_probe_7 && [ "$(note)" = after-7 ] && [ "$(db_version)" = 29991231000007 ] && [ ! -e "$MAINT" ]'
 
 # ...and if restoring the pre-rollback backup fails too: rollback-incomplete.
 # A trigger created by the admin account is in the pre-rollback dump; the
-# site's database user can't recreate it (another DEFINER), so that restore
+# site's database user can't recreate it (in CI: no SUPER while binary
+# logging is on, error 1419; elsewhere: another DEFINER), so that restore
 # fails. r13's pre-deploy backup has no trigger, so the first restore works.
 deploy r13 "$WORK/rb8.tar.gz"
 prep "r13 deployed" test "$rc" -eq 0

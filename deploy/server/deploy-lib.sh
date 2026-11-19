@@ -269,6 +269,9 @@ restore_database() { # <backup>
     say "Restoring the database from $(basename "$backup")"
     [ -s "$backup" ] && [ -n "$OPT" ] || { say "No backup or option file to restore from"; return 1; }
 
+    # A rollback can restore twice (the target, then its undo): one work
+    # folder at a time, so none is left behind.
+    if [ -n "$RESTORE_WORK" ]; then rm -rf "$RESTORE_WORK"; RESTORE_WORK=""; fi
     RESTORE_WORK="$(mktemp -d "$SITE_DIR/.restore.XXXXXX")" || { say "Could not create a work folder for the restore"; return 1; }
     new_errfile || { say "Could not create a file for error output"; return 1; }
     if ! gzip -dc "$backup" | sed -n 's/^CREATE TABLE `\([^`]*\)`.*/\1/p' | LC_ALL=C sort -u > "$RESTORE_WORK/in-backup" \
