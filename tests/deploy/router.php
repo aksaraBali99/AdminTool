@@ -3,12 +3,15 @@
  * Router for the `php -S` server in tests/deploy/deploy-test.sh.
  *
  * Serves whatever the fake site's public_html points to at the moment of
- * each request (the server runs with realpath_cache_size=0), the way the
- * real web server follows the public_html -> current -> releases/<id> links.
+ * each request (the server runs with realpath_cache_size=0 and
+ * opcache.enable=0, so neither cache serves the previous release), the way
+ * the real web server follows the public_html -> current -> releases/<id>
+ * links.
  *
  * Each request is logged to the server's log (shown by the test when a
- * check fails): the folder it was served from, the HTTP status and the
- * start of the answer. Test data only, never real secrets.
+ * check fails): the folder it was served from, the HTTP status, the start
+ * of the answer and PHP's opcache state. Test data only; the test checks
+ * its database password is never in that log.
  */
 $docroot = getenv('DEPLOY_TEST_DOCROOT');
 clearstatcache(true);

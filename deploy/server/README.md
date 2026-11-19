@@ -87,8 +87,10 @@ of one site never overlap. Then:
    `"status":"ok"`, the release's `VERSION` and its `REVISION` (full commit
    sha). That shows the new release is what the site actually serves, not an
    older folder or a cached page. It tries for about 3 minutes (18 times,
-   10 s apart), because PHP workers may keep resolving the old release for
-   up to 2 minutes (PHP's realpath cache). To shorten that, the deploy
+   10 s apart), because PHP workers may keep running the old release for a
+   while: PHP's realpath cache can resolve the old folder for up to 2
+   minutes, and opcache can reuse the old compiled files until it next
+   checks them (`opcache.revalidate_freq`). To shorten that, the deploy
    touches `~/.lsphp_restart.txt` after every link change, which asks
    LiteSpeed to restart the account's PHP workers.
 8. **Turns maintenance off**, then removes old releases and backups.

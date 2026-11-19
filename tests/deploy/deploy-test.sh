@@ -143,6 +143,7 @@ for _ in $(seq 1 50); do
     sleep 0.1
 done
 echo "Test site: $(grep -m1 -o 'sapi=[^]]*' "$WORK/server.log" || echo "no router line")"
+check "the test site runs without opcache (else it may serve the previous release)" 'grep -m1 "router: " "$WORK/server.log" | grep -q "active=no"'
 
 # --------------------------------------------------------------- releases
 echo "Building release tarballs"
@@ -413,7 +414,7 @@ check "the newest backup is r7's" '[ "$(cd "$BACKUP_DIR" && ls | sort | tail -n1
 # --------------------------------------------------------------- 8. secrets
 echo
 echo "8. No secrets left or logged"
-check "the password is in no log or output" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT"'
+check "the password is in no log or output, the web server's log included" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT" "$WORK/server.log"'
 check "no temporary option, health or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 -name '\''.db-options.*'\'' -o -maxdepth 2 -name '\''.health.*'\'' -o -maxdepth 2 -name '\''.incoming-*'\'')" ]'
 check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 15 ]'
 

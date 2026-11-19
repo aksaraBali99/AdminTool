@@ -58,8 +58,10 @@ ROOT="${DEPLOY_ROOT:-$HOME}"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 APP_DIR="$(dirname "$BIN_DIR")"
 PHP="${DEPLOY_PHP:-php}"
-# About 3 minutes: PHP workers may keep resolving the old release for up to
-# realpath_cache_ttl (120 s by default) after "current" moves.
+# About 3 minutes: after "current" moves, PHP workers may keep running the
+# old release for a while: the realpath cache can resolve the old folder for
+# up to realpath_cache_ttl (120 s by default), and opcache can reuse the old
+# compiled files until it next checks them (opcache.revalidate_freq).
 HEALTH_TRIES="${DEPLOY_HEALTH_TRIES:-18}"
 HEALTH_WAIT="${DEPLOY_HEALTH_WAIT:-10}"
 SETTLE_SECONDS="${DEPLOY_SETTLE_SECONDS:-3}"
