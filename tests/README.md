@@ -64,8 +64,11 @@ real user data.** Several tests deliberately exercise
 endpoints that are currently missing authentication or authorization
 checks (that's the point — the test would be meaningless otherwise), and
 some of those endpoints have real side effects: `Cron::index()` inserts
-billing records and sends outbound WhatsApp messages via a third-party API
-for every row matching its active-student filter.
+billing records for every row matching its active-student filter. (Its
+WhatsApp reminders are never sent outside production, and the test server
+runs with `CI_ENV=testing`; see `docs/OUTBOUND_MESSAGES.md`. `run-tests.sh`
+also points the WhatsApp URL at a local stub, `tests/stubs/fonnte-stub.php`,
+so even a broken gate couldn't reach Fonnte.)
 
 `tests/bootstrap.php` refuses to run at all unless `TEST_DB_NAME` is
 exactly `admintool_test`, and the seed fixture is built so that even a
@@ -117,6 +120,8 @@ fixture.
 - `tests/Financial/PembayaranBulananTest.php` — month-over-month payment percentage change (finance dashboard)
 - `tests/Financial/KategoriChartsTest.php` — the two per-category pie charts (superadmin dashboard)
 - `tests/Financial/RincianListingsTest.php` — the two "recent activity" tables (superadmin dashboard)
+- `tests/Outbound/*Test.php` — WhatsApp/email are never sent outside production: the gate itself, `MY_Email`, an invoice sent on the test server (against the Fonnte stub), and a scan of `application/` for network calls around the gate (`docs/OUTBOUND_MESSAGES.md`)
+- `tests/stubs/fonnte-stub.php` — stand-in for Fonnte that only records hits; started by `run-tests.sh`
 
 ## A note on test isolation
 

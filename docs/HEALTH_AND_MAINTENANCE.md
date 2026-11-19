@@ -11,7 +11,8 @@ Public, no login, read-only. It answers JSON:
 
 ```json
 {"status":"ok","version":"1.1.1","revision":"9b970e3...(40 characters)","php":"8.3",
- "database":"ok","migrations":"ok","db_version":"20261028000000","maintenance":false}
+ "database":"ok","migrations":"ok","db_version":"20261028000000","maintenance":false,
+ "outbound":"blocked"}
 ```
 
 | Field | Meaning |
@@ -24,6 +25,7 @@ Public, no login, read-only. It answers JSON:
 | `migrations` | `ok`, or `pending` when the code has a migration the database has not run yet |
 | `db_version` | The newest migration the database has run |
 | `maintenance` | `true` while maintenance mode is on |
+| `outbound` | `live` when the site really sends WhatsApp/email, which only happens with `CI_ENV=production` exactly; `blocked` everywhere else (DEV, local, CI). See [OUTBOUND_MESSAGES.md](OUTBOUND_MESSAGES.md). A PROD site showing `blocked` is missing `SetEnv CI_ENV production`. It doesn't affect `status` |
 
 It never shows passwords or error details, and it answers JSON even when the
 database is down, in every `CI_ENV` (it switches off CodeIgniter's database

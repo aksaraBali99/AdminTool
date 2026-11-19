@@ -441,7 +441,9 @@ class Peserta extends CI_Controller
         echo json_encode('success');
     }
 
-    public function kirim_reminder_tagihan($data, $bulan, $tahun, $invoice_data, $breakdown = "")
+    // Private: only kirim_invoice() calls it. As a public method it was a URL
+    // anyone logged in could call (Peserta/kirim_reminder_tagihan).
+    private function kirim_reminder_tagihan($data, $bulan, $tahun, $invoice_data, $breakdown = "")
     {
         // Persiapkan teks yang akan dikirim ke WhatsApp 
         $text = '';

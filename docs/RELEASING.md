@@ -25,6 +25,18 @@ both PROD sites. A release is a pull request from `main` into `production`.
    [DATABASE_CHANGES.md](DATABASE_CHANGES.md)).
 6. Check the footer of each PROD site shows the new version, and click
    through the main pages.
+7. Check each PROD site's `https://<site>/index.php/Health` shows
+   `"outbound":"live"`. WhatsApp (and email) are only sent where
+   `CI_ENV` is exactly `production` ([OUTBOUND_MESSAGES.md](OUTBOUND_MESSAGES.md)).
+   A PROD site showing `"blocked"` silently stops sending invoices: there is
+   no error, only "NOT SENT" in `reminder_tagihan`. Fix it by adding
+   `SetEnv CI_ENV production` to that site's `.htaccess`.
+
+**Before the first release that contains EHU-0023-6** (the production-only
+gate for WhatsApp/email): check that each PROD site's `.htaccess` already
+has `SetEnv CI_ENV production`, spelled exactly like that. Older code didn't
+depend on it for sending, so a PROD site without it worked until now and
+would stop sending WhatsApp with this release.
 
 ## Which number to bump
 

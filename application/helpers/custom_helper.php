@@ -81,13 +81,31 @@ function tgl($tanggal)
     return $pecahkan[2] . '-' . $pecahkan[1] . '-' . $pecahkan[0];
 }
 
+/*
+ * Sends a WhatsApp message through Fonnte, but only in production
+ * (outbound_is_live(), application/helpers/outbound_helper.php). Anywhere
+ * else it makes no request at all and returns a Fonnte-shaped answer with
+ * status false and a "NOT SENT (<environment>): ..." reason, which callers
+ * log into reminder_tagihan like any other failed send.
+ */
 function sendWa($no_hp, $isi_pesan, $token)
 {
+    $fonnte_url = outbound_fonnte_url(ENVIRONMENT);
+
+    if ( ! outbound_is_live(ENVIRONMENT)) {
+        log_message('info', 'WhatsApp NOT SENT (' . ENVIRONMENT . '): blocked outside production; target='
+            . $no_hp . ', message length=' . strlen((string) $isi_pesan));
+        return json_encode(array(
+            'status' => false,
+            'reason' => 'NOT SENT (' . ENVIRONMENT . '): WhatsApp is blocked outside production',
+            'target' => $no_hp,
+        ));
+    }
 
     $curl = curl_init();
 
     curl_setopt_array($curl, array(
-        CURLOPT_URL => 'https://api.fonnte.com/send',
+        CURLOPT_URL => $fonnte_url,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_ENCODING => '',
         CURLOPT_MAXREDIRS => 10,

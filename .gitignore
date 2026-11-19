@@ -43,6 +43,7 @@ vendor/
 # (tests/run-tests.sh, tests/serve-test-app.sh)
 tests/.session-tmp/
 tests/.maintenance-tmp/
+tests/.fonnte-stub-tmp/
 
 # Playwright (e2e/) - npm dependencies and run artifacts
 e2e/node_modules/
