@@ -84,6 +84,14 @@ so two deploys of one site never overlap. Then:
    `docs/OUTBOUND_MESSAGES.md`), nor PROD into one that silently doesn't.
    The message says what to fix. From the `.htaccess` it only ever names
    one of those three values, never anything else.
+
+   **What this can't catch:** both set to `production` on a site that isn't
+   PROD. Then the deploy can't tell it apart from a real PROD site: it keeps
+   the WhatsApp token and expects `"outbound":"live"`, and the app sends
+   real messages, to real students if the database is a copy of PROD's.
+   Never set `ci_env=production` (or `SetEnv CI_ENV production`) on a site
+   whose database isn't the real one, and treat changing a site's `ci_env`
+   like a change on PROD.
 2. **Unpacks** into `releases/<id>/` and links in the shared `.htaccess` and
    `uploads/`.
 3. **Turns maintenance on**: creates the `MAINTENANCE_FILE`. On the very
@@ -113,7 +121,15 @@ so two deploys of one site never overlap. Then:
    what the site actually serves, not an older folder or a cached page, and
    that it runs as the kind of site it should: a PROD site whose web server
    ignores its `SetEnv CI_ENV production` would answer `"blocked"` and
-   silently stop sending, so the deploy rolls back instead. It tries for about 3 minutes (18 times,
+   silently stop sending, so the deploy rolls back instead.
+
+   Code from before PR #29 (`be64b3d`) has no `outbound` field, so it can't
+   be deployed any more: a manual run with such an old `ref` fails Health
+   (`outbound='missing'` in the log) and rolls back. Normal deploys of
+   `main` aren't affected, and neither is the rollback after a failed
+   deploy, which goes back to the previous release folder without a Health
+   check. To go back to older behaviour, revert the change in `main` and
+   deploy that. It tries for about 3 minutes (18 times,
    10 s apart), because PHP workers may keep running the old release for a
    while: PHP's realpath cache can resolve the old folder for up to 2
    minutes, and opcache can reuse the old compiled files until it next

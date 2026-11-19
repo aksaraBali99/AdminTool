@@ -257,6 +257,22 @@ EOF
 variant prod-migrate 29991231000003_prod_broken.php 29991231000004_after_broken.php
 variant prod-broken 29991231000000_deploy_probe.php 29991231000003_prod_broken.php 29991231000004_after_broken.php
 
+# A migration that works but renames the column the deploy then overwrites:
+# the token step fails after migrations, and the deploy must roll back.
+cat > "$WORK/29991231000005_rename_token.php" <<'EOF'
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_Rename_token extends CI_Migration
+{
+    public function up()
+    {
+        $this->db->query("ALTER TABLE data_konfig CHANGE token_wa token_wa_renamed text NOT NULL");
+    }
+    public function down() {}
+}
+EOF
+variant token-renamed 29991231000000_deploy_probe.php 29991231000005_rename_token.php
+
 ALL_OUTPUT="$WORK/all-output.txt"
 deploy() { # <release-id> <tarball> -> $rc, $out
     LAST_DEPLOY="$1" SHOWN=0
@@ -403,6 +419,19 @@ prep "drop the added tables by hand" sql "DROP TABLE IF EXISTS deploy_prod_tmp, 
 rm -f "$MAINT"
 check "after the fix by hand: version is r2's, maintenance off, Health ok" \
     '[ "$(sql '\''SELECT version FROM migrations'\'')" = 29991231000000 ] && [ ! -e "$MAINT" ] && health_ok'
+
+# --------------------------------------------------------------- 4d. token step fails
+echo
+echo "4d. Deploy whose WhatsApp-token step fails (ci_env=testing)"
+prep "put a WhatsApp token back" sql "UPDATE data_konfig SET token_wa = '$WA_TOKEN' WHERE id_konfig = 0"
+deploy r3t "$WORK/token-renamed.tar.gz"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rolled-back" 'result_is r3t rolled-back'
+check "fails at the token step, after migrations" 'grep -q "d. Migrations done" <<< "$out" && grep -q "ERROR: Could not disable the WhatsApp token in data_konfig" <<< "$out" && grep -q "FAILED during step '\''disable-messaging'\''" <<< "$out"'
+check "...logging the database error, masked" 'grep -q "mysql: .*token_wa" <<< "$out" && ! grep -qF "$DB" <<< "$out"'
+check "the restore undoes the migration: the column is back, with the token as before" '[ "$(token_wa)" = "$WA_TOKEN" ] && [ -z "$(sql "SHOW COLUMNS FROM data_konfig LIKE '\''token_wa_renamed'\''")" ]'
+check "the migration version is back to r2'\''s" '[ "$(sql '\''SELECT version FROM migrations'\'')" = 29991231000000 ]'
+check "current points back to releases/r2, maintenance off, Health ok" '[ "$(live_release)" = releases/r2 ] && [ ! -e "$MAINT" ] && [ ! -e "$SITE_DIR/releases/r3t" ] && health_ok'
 
 # --------------------------------------------------------------- 5. failed health check
 echo
