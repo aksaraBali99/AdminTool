@@ -783,7 +783,8 @@ echo
 echo "8. No secrets left or logged"
 check "the password is in no log or output, the web server's log included" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT" "$WORK/server.log"'
 check "the WhatsApp token is in no log or output" '! grep -rqF "$WA_TOKEN" "$SITE_DIR/logs" "$ALL_OUTPUT" "$WORK/server.log"'
-check "no temporary option, health, error-output, restore or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 \( -name '\''.db-options.*'\'' -o -name '\''.health.*'\'' -o -name '\''.stderr.*'\'' -o -name '\''.restore.*'\'' -o -name '\''.incoming-*'\'' \))" ]'
+leftover="$(find "$SITE_DIR" -maxdepth 2 \( -name '.db-options.*' -o -name '.health.*' -o -name '.stderr.*' -o -name '.restore.*' -o -name '.incoming-*' \) | sed "s|$SITE_DIR/||" | tr '\n' ' ')"
+check "no temporary option, health, error-output, restore or incoming files left${leftover:+ (found: $leftover)}" '[ -z "$leftover" ]'
 check "the database name and user are in no log or output (masked)" '! grep -rqF -e "$DB" -e "$DB_USER" "$SITE_DIR/logs" "$ALL_OUTPUT"'
 # The server has no /dev/fd, so process substitution fails there (it made the
 # restore skip dropping new tables, found in DEV drill C2). CI has /dev/fd,
