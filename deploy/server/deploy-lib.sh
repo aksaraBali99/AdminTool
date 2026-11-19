@@ -307,6 +307,29 @@ restore_database() { # <backup>
     say "Database restored"
 }
 
+# Outside production the app never sends WhatsApp (outbound_is_live()), but a
+# DEV/test database is often a copy of PROD's, with PROD's real WhatsApp
+# token in it. Overwrite it, so the token can't be used from this database
+# even by code that skips the app's gate. Called by deploy.sh after its
+# migrations and by rollback.sh after restoring a backup (which can hold a
+# real token again). Logs "<step> WhatsApp token ... set to DISABLED-NON-PROD"
+# with the number of rows changed; returns non-zero on failure.
+#
+# If email/SMTP settings (or any other messaging credential) are ever stored
+# in the database, clear them here too.
+disable_messaging() { # <step>
+    local changed
+    new_errfile || return 1
+    if ! changed="$(mysql --defaults-extra-file="$OPT" -N -B \
+        -e "UPDATE data_konfig SET token_wa = 'DISABLED-NON-PROD'; SELECT ROW_COUNT();" \
+        "$DB_NAME" < /dev/null 2> "$ERRF")"; then
+        log_errfile mysql
+        return 1
+    fi
+    log_errfile mysql
+    say "$1 WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=$SITE_CI_ENV; ${changed:-0} row(s) changed)"
+}
+
 # ---------------------------------------------------------------- the switch
 
 # Asks LiteSpeed to restart this account's PHP workers, so none keeps serving

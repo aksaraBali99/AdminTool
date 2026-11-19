@@ -89,6 +89,7 @@ SHA="-"
 VERSION="-"
 PRE_ROLLBACK=""
 PRE_DEPLOY_BACKUP=""
+RESTORED=""
 OPT=""
 ERRF=""
 RESTORE_WORK=""
@@ -115,6 +116,7 @@ undo() {
     fi
     if [ "$DB_CHANGED" = 1 ]; then
         if restore_database "$PRE_ROLLBACK"; then
+            RESTORED=""
             say "The database is back as it was before the rollback"
         else
             ok=0
@@ -153,14 +155,16 @@ on_exit() {
     [ -n "$ERRF" ] && rm -f "$ERRF"
     [ -n "$RESTORE_WORK" ] && rm -rf "$RESTORE_WORK"
     if [ -n "$PRE_ROLLBACK" ] && [ -f "$PRE_ROLLBACK" ]; then backup_name="$(basename "$PRE_ROLLBACK")"; fi
+    # backup= the pre-rollback backup made; restored= the pre-deploy backup
+    # the database was put back to (its name carries its time).
     if [ -n "$LOGS" ] && [ -d "$LOGS" ]; then
-        printf '%s site=%s action=rollback type=%s from=%s to=%s sha=%s version=%s backup=%s result=%s\n' \
-            "$(now)" "$SITE" "$TYPE" "$FROM" "$TO" "$SHA" "$VERSION" "$backup_name" "$RESULT" \
+        printf '%s site=%s action=rollback type=%s from=%s to=%s sha=%s version=%s backup=%s restored=%s result=%s\n' \
+            "$(now)" "$SITE" "$TYPE" "$FROM" "$TO" "$SHA" "$VERSION" "$backup_name" "$RESTORED" "$RESULT" \
             >> "$HISTORY" 2>/dev/null
     fi
     # Read by the Rollback workflow for its job summary.
-    printf 'RESULT site=%s action=rollback type=%s from=%s to=%s sha=%s version=%s backup=%s result=%s\n' \
-        "$SITE" "$TYPE" "$FROM" "$TO" "$SHA" "$VERSION" "$backup_name" "$RESULT" 2>/dev/null
+    printf 'RESULT site=%s action=rollback type=%s from=%s to=%s sha=%s version=%s backup=%s restored=%s result=%s\n' \
+        "$SITE" "$TYPE" "$FROM" "$TO" "$SHA" "$VERSION" "$backup_name" "$RESTORED" "$RESULT" 2>/dev/null
     if [ "$RESULT" = rolled-back-manual ]; then exit 0; fi
     [ "$rc" -ne 0 ] || rc=1
     exit "$rc"
@@ -229,6 +233,12 @@ if [ "$TYPE" = code ]; then
     if [[ "$db_version" > "$target_migration" ]]; then
         die "The database has migrations release $TO doesn't know (database at $db_version, $TO's newest is $target_migration); use code and database, or ask a developer"
     fi
+    # Going forward to a release whose migrations the database hasn't run
+    # would only fail Health ("migrations pending") after minutes of
+    # maintenance. A rollback never runs migrations; a deploy does.
+    if [[ "$target_migration" > "$db_version" ]]; then
+        die "Release $TO needs migrations the database hasn't run (database at $db_version, $TO's newest is $target_migration); deploy a new commit instead"
+    fi
 else
     [ -n "$recorded_previous" ] \
         || die "Code and database needs the previous release of $LIVE, which isn't recorded in history.log; ask a developer"
@@ -247,6 +257,9 @@ else
         || die "The pre-deploy backup of $LIVE ($name) is $CHECK_ERROR; ask a developer"
 fi
 say "a. Rolling back from $LIVE to $TO (version $VERSION, commit $SHA; database at $db_version, $TO's newest migration $target_migration)"
+if [ "$TYPE" = code-db ]; then
+    say "a. The database goes back to $(basename "$PRE_DEPLOY_BACKUP") (taken when $LIVE was deployed); everything written since then is only kept in the pre-rollback backup"
+fi
 
 # ---------------------------------------------------------------- b. maintenance on
 STEP=maintenance-on
@@ -265,7 +278,15 @@ if [ "$TYPE" = code-db ]; then
     STEP=restore
     DB_CHANGED=1
     restore_database "$PRE_DEPLOY_BACKUP" || die "Could not restore the database from $(basename "$PRE_DEPLOY_BACKUP")"
-    say "c. Database as it was before $LIVE was deployed ($(basename "$PRE_DEPLOY_BACKUP"))"
+    RESTORED="$(basename "$PRE_DEPLOY_BACKUP")"
+    say "c. Database as it was before $LIVE was deployed ($RESTORED)"
+
+    # The restored backup was taken before that deploy overwrote the
+    # WhatsApp token, so it can hold a real one again (deploy-lib.sh).
+    if [ "$SITE_CI_ENV" != production ]; then
+        STEP=disable-messaging
+        disable_messaging "c." || die "Could not disable the WhatsApp token in data_konfig"
+    fi
 fi
 
 # ---------------------------------------------------------------- d. switch

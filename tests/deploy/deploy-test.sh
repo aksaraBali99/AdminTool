@@ -711,7 +711,7 @@ rollback previous code
 check "code only: rolls back to the previous release" '[ "$rc" -eq 0 ] && rb_result_is code r8 r7 rolled-back-manual && [ "$(live_release)" = releases/r7 ]'
 check "...checked Health on the target, which really serves r7" 'grep -q "e. Health ok .*outbound='\''blocked'\''" <<< "$out" && served_last | grep -q "releases/r7"'
 check "...maintenance off, database and backups untouched" '[ ! -e "$MAINT" ] && [ "$(db_version)" = "$version_before" ] && [ "$(pre_rollback_count)" = 0 ]'
-check "...history.log has a rolled-back-manual line" 'grep -q " site=dev action=rollback type=code from=r8 to=r7 .* backup= result=rolled-back-manual$" "$SITE_DIR/logs/history.log"'
+check "...history.log has a rolled-back-manual line" 'grep -q " site=dev action=rollback type=code from=r8 to=r7 .* backup= restored= result=rolled-back-manual$" "$SITE_DIR/logs/history.log"'
 
 # The live release came from a rollback: code and database is refused.
 rollback previous code-db
@@ -723,6 +723,9 @@ check "code only: goes forward again to r8" '[ "$rc" -eq 0 ] && rb_result_is cod
 
 # Code and database: a deploy that added a table and changed data.
 prep "note before r11" sql "UPDATE deploy_probe SET note = 'before-r11' WHERE id = 1"
+# A real-looking token, so r11's pre-deploy backup holds one (as DEV's older
+# backups do): restoring it must not bring it back.
+prep "token before r11" sql "UPDATE data_konfig SET token_wa = '$WA_TOKEN' WHERE id_konfig = 0"
 deploy r11 "$WORK/rb6.tar.gz"
 prep "r11 deployed" test "$rc" -eq 0
 version_r11="$(db_version)"
@@ -732,10 +735,16 @@ rollback previous code-db
 check "code and database: rolls back to r8" '[ "$rc" -eq 0 ] && rb_result_is code-db r11 r8 rolled-back-manual && [ "$(live_release)" = releases/r8 ] && served_last | grep -q "releases/r8"'
 pre_rb="$(find "$BACKUP_DIR" -name 'pre-rollback-*-r11.sql.gz')"
 check "...made a pre-rollback backup first: mode 600, complete" '[ -n "$pre_rb" ] && [ "$(stat -c %a "$pre_rb")" = 600 ] && gzip -dc "$pre_rb" | tail -n1 | grep -q "Dump completed"'
-check "...which is named in the result" 'grep -q "^RESULT .* backup=$(basename "$pre_rb") result=rolled-back-manual$" <<< "$out"'
+check "...which is named in the result, with the pre-deploy backup the database went back to" 'grep -q "^RESULT .* backup=$(basename "$pre_rb") restored=pre-deploy-.*-r11.sql.gz result=rolled-back-manual$" <<< "$out"'
+check "...and the log says up front which backup the database goes back to" 'grep -q "a. The database goes back to pre-deploy-.*-r11.sql.gz (taken when r11 was deployed)" <<< "$out"'
 check "...and holds the state before the rollback" 'gzip -dc "$pre_rb" | grep -q "CREATE TABLE \`rollback_probe_6\`"'
 check "...dropped the table r11 added and restored the data and migration version" 'grep -q "Dropping table rollback_probe_6 (not in the backup)" <<< "$out" && ! table_exists rollback_probe_6 && [ "$(note)" = before-r11 ] && [ "$(db_version)" = 29991231000000 ]'
 check "...maintenance off" '[ ! -e "$MAINT" ]'
+check "...and overwrote the real WhatsApp token the restored backup brought back (ci_env=testing)" '[ "$(token_wa)" = DISABLED-NON-PROD ] && grep -q "c. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=testing; 1 row(s) changed)" <<< "$out"'
+
+# Forward to a kept release that needs migrations: refused up front.
+rollback r11 code
+check "refuses code only to a release that needs migrations the database hasn't run" '[ "$rc" -ne 0 ] && grep -q "Release r11 needs migrations the database hasn.t run (database at 29991231000000, r11.s newest is 29991231000006); deploy a new commit instead" <<< "$out" && [ "$(live_release)" = releases/r8 ] && [ ! -e "$MAINT" ]'
 
 # Code only: Health fails on the target -> back to the release that was live.
 echo production > "$FORCE_CI_ENV"

@@ -292,7 +292,9 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
   is `success`, `already-live` (re-run, nothing changed), `rolled-back`,
   `failed` (refused before anything changed) or `rollback-incomplete`.
   A rollback writes one line too, with `action=rollback`, e.g.
-  `... site=dev action=rollback type=code from=80bc554e1a2b to=7ee63bb490ea sha=7ee63bb... version=1.1.1 backup= result=rolled-back-manual`.
+  `... site=dev action=rollback type=code from=80bc554e1a2b to=7ee63bb490ea sha=7ee63bb... version=1.1.1 backup= restored= result=rolled-back-manual`
+  (`backup=` the pre-rollback backup made, `restored=` the pre-deploy backup
+  the database went back to; both only for `code and database`).
 - `~/apps/<app>/bin/gate.log`: refused SSH commands.
 - In GitHub: the Deploy and Rollback runs' logs show the same steps, and
   their summaries show the result.
@@ -327,7 +329,9 @@ maintenance off.
   target release doesn't know ("use code and database, or ask a
   developer"); old code on a newer database can break in ways Health
   doesn't see. It can also go forward again to a newer release that is
-  still on the server.
+  still on the server, as long as the database already has that
+  release's migrations (a rollback never runs migrations; otherwise it is
+  refused: "deploy a new commit instead").
 - **`code and database`**: the code goes back to the **previous** release
   (the one that was live when the broken one was deployed) and the
   database goes back to how it was then: the broken release's pre-deploy
@@ -335,7 +339,13 @@ maintenance off.
   from the live database** (invoices, attendance, anything). It is saved
   first in `~/apps/<app>/backups/<site>/pre-rollback-<UTC time>-<id>.sql.gz`
   (mode 600, checked like a deploy's backup), and tables the broken
-  release's migrations added are dropped. Only allowed when the live
+  release's migrations added are dropped. The log, the `RESULT` line
+  (`restored=`) and the run's summary name the pre-deploy backup the
+  database went back to; its name carries its UTC time, so you can see how
+  much was discarded. On a site whose `ci_env` isn't production, the
+  WhatsApp token is overwritten again right after the restore, as a deploy
+  does: that backup was taken before its deploy overwrote the token, so it
+  can hold a real one. Only allowed when the live
   release became live through a successful deploy, not through a rollback
   (otherwise "the live release came from a rollback; its backup is too old
   to restore safely; ask a developer").
@@ -343,7 +353,8 @@ maintenance off.
 **It refuses, before changing anything,** a release that isn't on the server,
 the live release, `code and database` to anything but the previous release
 or without a valid pre-deploy backup, `code only` with a database that is
-ahead of the target, "previous" when the live release's deploy didn't record
+ahead of the target or behind it (the target needs migrations), "previous"
+when the live release's deploy didn't record
 one (deploys from before rollbacks existed), a release from before the
 WhatsApp/email guard (no `outbound_is_live()` in
 `application/helpers/outbound_helper.php`: it could send real messages

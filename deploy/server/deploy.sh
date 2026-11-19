@@ -306,27 +306,14 @@ printf '%s\n' "$migrate_out" | tail -n 40 | while IFS= read -r line; do say "   
 [ "$migrate_rc" -eq 0 ] || die "Migrations failed (exit $migrate_rc)"
 say "d. Migrations done"
 
-# Outside production the app never sends WhatsApp (outbound_is_live()), but a
-# DEV/test database is often a copy of PROD's, with PROD's real WhatsApp
-# token in it. Overwrite it, so the token can't be used from this database
-# even by code that skips the app's gate. Runs after migrations so it also
-# covers a token a migration might add, and before the switch so a failure
-# here rolls back like any other step (the restore then puts the database,
-# token included, back as it was before the deploy).
-#
-# If email/SMTP settings (or any other messaging credential) are ever stored
-# in the database, clear them here too.
+# Outside production: overwrite the WhatsApp token (disable_messaging() in
+# deploy-lib.sh). After migrations, so it also covers a token a migration
+# might add; before the switch, so a failure here rolls back like any other
+# step (the restore then puts the database, token included, back as it was
+# before the deploy).
 if [ "$SITE_CI_ENV" != production ]; then
     STEP=disable-messaging
-    new_errfile || die "Could not create a file for error output"
-    if ! changed="$(mysql --defaults-extra-file="$OPT" -N -B \
-        -e "UPDATE data_konfig SET token_wa = 'DISABLED-NON-PROD'; SELECT ROW_COUNT();" \
-        "$DB_NAME" < /dev/null 2> "$ERRF")"; then
-        log_errfile mysql
-        die "Could not disable the WhatsApp token in data_konfig"
-    fi
-    log_errfile mysql
-    say "d. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=$SITE_CI_ENV; ${changed:-0} row(s) changed)"
+    disable_messaging "d." || die "Could not disable the WhatsApp token in data_konfig"
 fi
 
 # ---------------------------------------------------------------- e. switch

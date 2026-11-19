@@ -129,7 +129,8 @@ jobs:
           set -uo pipefail
           line="$(grep '^RESULT ' "$RUNNER_TEMP/rollback-output.txt" 2>/dev/null | tail -n1)"
           field() { printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
-          result="$(field result)"; from="$(field from)"; to="$(field to)"; backup="$(field backup)"
+          result="$(field result)"; from="$(field from)"; to="$(field to)"
+          backup="$(field backup)"; restored="$(field restored)"
           case "$result" in
             rolled-back-manual) shown="✅ rolled back: $to is live" ;;
             rollback-failed) shown="↩️ failed, undone: $from is live again (and its database, for code and database)" ;;
@@ -140,9 +141,13 @@ jobs:
           {
             echo "### Rollback of DEV"
             echo
-            echo "| Site | Type | From | To | Pre-rollback backup | Result |"
-            echo "| --- | --- | --- | --- | --- | --- |"
-            echo "| dev (admin-dev.englishhubbali.com) | $TYPE | \`${from:--}\` | \`${to:--}\` | ${backup:+\`$backup\`} | $shown |"
+            echo "| Site | Type | From | To | Database put back to | Pre-rollback backup | Result |"
+            echo "| --- | --- | --- | --- | --- | --- | --- |"
+            echo "| dev (admin-dev.englishhubbali.com) | $TYPE | \`${from:--}\` | \`${to:--}\` | ${restored:+\`$restored\`} | ${backup:+\`$backup\`} | $shown |"
+            if [ -n "$restored" ]; then
+              echo
+              echo "The database is as it was at \`$restored\` (its name has the UTC time). Everything written after that is only in the pre-rollback backup."
+            fi
             echo
             echo "Server logs: \`~/domains/admin-dev.englishhubbali.com/deploy/logs/\` (deploy.log and history.log)."
           } >> "$GITHUB_STEP_SUMMARY"
