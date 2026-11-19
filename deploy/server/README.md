@@ -113,6 +113,15 @@ so two deploys of one site never overlap. Then:
    database back as it was before the deploy, token included. If email/SMTP
    settings are ever stored in the database, `deploy.sh` must clear them in
    the same place.
+
+   The backups still have the token for a while: the deploy backs up the
+   database (step 4) **before** it overwrites the token, so that a rollback
+   can put everything back exactly. The first backup taken by a deploy
+   with this step, and every backup from before, still holds the real
+   token. They are mode 600 in `~/apps/<app>/backups/<site>/` and only
+   reachable with the SSH login, and they age out as the newest 5 are kept.
+   To have the real token gone from the server right away, delete the
+   site's older backups once the first deploy with this step has worked.
 6. **Switches** `current` to the new release, atomically (`ln -s` + `mv -T`).
 7. **Checks Health**: `https://<domain>/index.php/Health` must say
    `"status":"ok"`, the release's `VERSION` and its `REVISION` (full commit
