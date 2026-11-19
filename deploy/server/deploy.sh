@@ -32,7 +32,8 @@
 #      REVISION (full commit sha), i.e. the new release is what is served,
 #      and "outbound" "live" on production, "blocked" anywhere else;
 #      retried for about 3 minutes
-#   g. maintenance off; keep the newest 3 releases and 5 pre-deploy backups
+#   g. maintenance off; keep the newest 3 releases (plus the live one and the
+#      one live before it) and 5 pre-deploy backups
 #   h. on any failure after (b): restore the database if migrations started,
 #      put the previous release back, maintenance off, exit non-zero
 #
@@ -339,10 +340,14 @@ say "g. Maintenance off"
 STEP=cleanup
 live="$(readlink "$CURRENT")"
 live="${live#releases/}"
+# Keep the newest 3, the live release, and the release that was live before
+# this deploy (its recorded previous=, what "roll back to previous" goes to):
+# after a rollback that one can be older than the newest 3.
+previous="${PREV#releases/}"
 find "$RELEASES" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%T@ %f\n' \
     | sort -rn | awk -v keep="$KEEP_RELEASES" 'NR > keep { print $2 }' \
     | while IFS= read -r old; do
-        if [ -n "$old" ] && [ "$old" != "$live" ]; then
+        if [ -n "$old" ] && [ "$old" != "$live" ] && [ "$old" != "$previous" ]; then
             rm -rf "${RELEASES:?}/$old" && say "g. Removed old release $old"
         fi
     done || say "g. Warning: could not clean up old releases"

@@ -787,6 +787,19 @@ pre_rollbacks="$(pre_rollback_count)"
 deploy r14 "$WORK/rb8.tar.gz"
 check "a later deploy keeps every pre-rollback backup" '[ "$rc" -eq 0 ] && [ "$(pre_rollback_count)" = "$pre_rollbacks" ] && [ "$pre_rollbacks" -ge 3 ]'
 
+# The cleanup never deletes the release the live one records as previous:
+# A -> B -> C, code rollback to A, deploy D. D's previous is A, older than
+# the newest 3 (D, C, B), and must stay so "previous" still works.
+for id in ra rb rc; do deploy "$id" "$WORK/rb8.tar.gz"; done
+prep "ra, rb, rc deployed" test "$rc" -eq 0
+rollback ra code
+prep "rolled back to ra" test "$(live_release)" = releases/ra
+deploy rd "$WORK/rb8.tar.gz"
+check "D records A as its previous release" '[ "$rc" -eq 0 ] && grep -q " site=dev release=rd .* previous=ra result=success$" "$SITE_DIR/logs/history.log"'
+check "the cleanup keeps A (older than the newest 3) next to D, C and B" '[ -d "$SITE_DIR/releases/ra" ] && [ "$(cd "$SITE_DIR/releases" && ls | sort | tr '\''\n'\'' '\'' '\'')" = "ra rb rc rd " ]'
+rollback previous code
+check "...so rolling back to previous still reaches A" '[ "$rc" -eq 0 ] && rb_result_is code rd ra rolled-back-manual && [ "$(live_release)" = releases/ra ]'
+
 # --------------------------------------------------------------- 8. secrets
 echo
 echo "8. No secrets left or logged"

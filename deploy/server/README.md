@@ -38,7 +38,8 @@ Two kinds of folders:
 ~/domains/admin-dev.englishhubbali.com/
     public_html -> ~/domains/admin-dev.englishhubbali.com/deploy/current
     deploy/
-        releases/<id>/                one folder per release (the newest 3 are kept)
+        releases/<id>/                one folder per release (the newest 3 are kept, plus
+                                      the live one and its recorded previous release)
             .htaccess -> ../../shared/.htaccess
             uploads   -> ../../shared/uploads
         current -> releases/<id>
