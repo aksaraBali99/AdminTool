@@ -1,12 +1,16 @@
 # SSH deploy: server side
 
 The GitHub Actions workflow `.github/workflows/deploy.yml` deploys a site by
-sending a release tarball over SSH. On the server, two scripts do the work:
+sending a release tarball over SSH; `.github/workflows/rollback.yml` rolls
+it back to an earlier release by hand. On the server, these scripts do the
+work:
 
 | File | Installed as | Role |
 | --- | --- | --- |
-| `gate.sh` | `~/apps/admintool/bin/gate.sh` | The only command AdminTool's GitHub key may run. Accepts exactly `deploy <site> <release-id>`, for sites listed in `sites.allow` next to it. Logs anything else to `gate.log` next to it and refuses it. |
+| `gate.sh` | `~/apps/admintool/bin/gate.sh` | The only command AdminTool's GitHub key may run. Accepts exactly `deploy <site> <release-id>` or `rollback <site> <release-id\|previous> <code\|code-db>`, for sites listed in `sites.allow` next to it. Logs anything else to `gate.log` next to it and refuses it. |
 | `deploy.sh` | `~/apps/admintool/bin/deploy.sh` | Unpacks the release and deploys it, rolling back by itself if anything fails. |
+| `rollback.sh` | `~/apps/admintool/bin/rollback.sh` | Rolls the live release back to a kept one, by hand (see "Rolling back a live release"). |
+| `deploy-lib.sh` | `~/apps/admintool/bin/deploy-lib.sh` | Helpers both scripts load: logging and masking, the site checks, backups and restore, the switch, the Health check. Never run on its own. |
 
 Only DEV (`dev`, admin-dev.englishhubbali.com) uses this for now. The PROD
 sites still use Hostinger's Git deploy.
@@ -22,11 +26,14 @@ Two kinds of folders:
 
 ```
 ~/apps/admintool/                     one folder per app
-    bin/                              gate.sh, deploy.sh (mode 700), sites.allow, gate.log
+    bin/                              gate.sh, deploy.sh, rollback.sh (mode 700),
+                                      deploy-lib.sh (mode 600), sites.allow, gate.log
         sites/dev.conf                domain=admin-dev.englishhubbali.com
                                       ci_env=testing
     backups/dev/                      pre-deploy-<UTC time>-<id>.sql.gz
                                       (mode 600; the newest 5 are kept)
+                                      pre-rollback-<UTC time>-<id>.sql.gz
+                                      (mode 600; never deleted automatically)
 
 ~/domains/admin-dev.englishhubbali.com/
     public_html -> ~/domains/admin-dev.englishhubbali.com/deploy/current
@@ -279,27 +286,120 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
   `... d. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=testing; 1 row(s) changed)`
   (`0 row(s)` once it already was).
 - `~/domains/<domain>/deploy/logs/history.log`: one line per deploy, e.g.
-  `2026-11-18T05:05:40Z site=dev release=80bc554e1a2b sha=80bc554... version=1.1.1 backup=pre-deploy-20261118T050505Z-80bc554e1a2b.sql.gz result=success`.
-  The result is `success`, `already-live` (re-run, nothing changed),
-  `rolled-back`, `failed` (refused before anything changed) or
-  `rollback-incomplete`.
+  `2026-11-18T05:05:40Z site=dev release=80bc554e1a2b sha=80bc554... version=1.1.1 backup=pre-deploy-20261118T050505Z-80bc554e1a2b.sql.gz previous=7ee63bb490ea result=success`.
+  `previous=` is the release that was live before (`-` on the first
+  deploy); deploys from before rollbacks existed don't have it. The result
+  is `success`, `already-live` (re-run, nothing changed), `rolled-back`,
+  `failed` (refused before anything changed) or `rollback-incomplete`.
+  A rollback writes one line too, with `action=rollback`, e.g.
+  `... site=dev action=rollback type=code from=80bc554e1a2b to=7ee63bb490ea sha=7ee63bb... version=1.1.1 backup= result=rolled-back-manual`.
 - `~/apps/<app>/bin/gate.log`: refused SSH commands.
-- In GitHub: the Deploy run's log shows the same steps, and its summary
-  shows site, version, commit, backup and result.
+- In GitHub: the Deploy and Rollback runs' logs show the same steps, and
+  their summaries show the result.
 
 A deploy refused before it knows the site's folder (no `sites/<site>.conf`,
 or an invalid domain in it) is only in the Actions log.
 
+## Rolling back a live release
+
+When a release is live but turns out to be broken, roll back to the release
+before it: **Actions > Rollback > Run workflow**, "Use workflow from"
+`main`:
+
+| Input | What to enter |
+| --- | --- |
+| site | `dev` |
+| type | `code only`, or `code and database` (see below) |
+| release | leave empty for the previous release, or a release id from a Deploy summary (any release still on the server, `code only`) |
+| confirm | `dev` again; anything else stops the run before it connects |
+
+It runs `rollback.sh` on the server, which shares the deploy lock (a
+rollback and a deploy never overlap, and the workflow waits for a running
+deploy). The steps: checks, maintenance on, (database), switch `current`,
+PHP restart, Health with the target's `VERSION`, `REVISION` and `outbound`,
+maintenance off.
+
+**Which type:**
+
+- **`code only`**: only the code goes back; the database stays as it is,
+  with everything entered since. Use it when the broken release didn't
+  change the database. It is refused when the database has migrations the
+  target release doesn't know ("use code and database, or ask a
+  developer"); old code on a newer database can break in ways Health
+  doesn't see. It can also go forward again to a newer release that is
+  still on the server.
+- **`code and database`**: the code goes back to the **previous** release
+  (the one that was live when the broken one was deployed) and the
+  database goes back to how it was then: the broken release's pre-deploy
+  backup. **Everything written to the database since that deploy is lost
+  from the live database** (invoices, attendance, anything). It is saved
+  first in `~/apps/<app>/backups/<site>/pre-rollback-<UTC time>-<id>.sql.gz`
+  (mode 600, checked like a deploy's backup), and tables the broken
+  release's migrations added are dropped. Only allowed when the live
+  release became live through a successful deploy, not through a rollback
+  (otherwise "the live release came from a rollback; its backup is too old
+  to restore safely; ask a developer").
+
+**It refuses, before changing anything,** a release that isn't on the server,
+the live release, `code and database` to anything but the previous release
+or without a valid pre-deploy backup, `code only` with a database that is
+ahead of the target, "previous" when the live release's deploy didn't record
+one (deploys from before rollbacks existed), a release from before the
+WhatsApp/email guard (no `outbound_is_live()` in
+`application/helpers/outbound_helper.php`: it could send real messages
+again), and anything the deploy also refuses (`ci_env`, maintenance already
+on, a deploy running).
+
+**Results** (in the run's summary and `history.log`):
+
+| Result | Meaning |
+| --- | --- |
+| `rolled-back-manual` | Done: the target is live. |
+| `rollback-failed` | Something failed after maintenance went on (e.g. Health): the code is back on the release that was live, and for `code and database` the pre-rollback backup was restored. Maintenance is off. The run is red. |
+| `rollback-incomplete` | As above, but putting things back failed too (e.g. restoring the pre-rollback backup). **Maintenance is left on**; fix it as in "When a rollback is incomplete". |
+| `failed` | Refused; nothing changed. The log says why. |
+
+**Afterwards:**
+
+- **Stop the broken code coming back.** While `DEPLOY_DEV_ENABLED` is on,
+  the next merge into `main` deploys whatever `main` holds. Revert the
+  broken change in `main` (GitHub's "Revert" button on its PR), or switch
+  automatic deploys off first.
+- **The same commit can't simply be deployed again:** the deploy refuses a
+  release id that is on the server but not live. Go forward with a new
+  commit in `main`, or with a `code only` rollback to the newer release.
+- **Pre-rollback backups are never deleted automatically** (pre-deploy
+  backups are: the newest 5 are kept). Delete them by hand once you're sure
+  you won't need the data in them; they contain everything that was in the
+  database, so keep them out of sight like the other backups.
+- Releases from before the outbound gate can't be rolled back to at all,
+  and on DEV the releases from before this rollback was installed have no
+  `previous=` recorded: name the release, `code only`.
+
+**In an emergency, without GitHub** (over SSH with your own login):
+
+```sh
+~/apps/admintool/bin/rollback.sh dev previous code       # or <release-id>, and/or code-db
+```
+
+It does exactly what the workflow does, logs to the same `deploy.log` and
+`history.log`, and prints the same `RESULT` line.
+
 ## When a rollback is incomplete
 
 The run says `rollback-incomplete` and the site shows the maintenance page.
-Over SSH, with `S=~/domains/<domain>/deploy`:
+This can come from a failed deploy whose own rollback failed, or from a
+rollback (`rollback.sh`) whose undo failed. Over SSH, with
+`S=~/domains/<domain>/deploy`:
 
 1. Read the end of `$S/logs/deploy.log` to see what failed.
 2. Check `current` points to the release you want: `readlink $S/current`.
    If not:
    `ln -sfn releases/<id> $S/current.new && mv -T $S/current.new $S/current`.
-3. Restore the database from the backup named in the log. `mysql` reads the
+3. Restore the database from the backup named in the log (after a failed
+   deploy: its pre-deploy backup; after a failed rollback: the
+   pre-rollback backup, i.e. the database as it was just before the
+   rollback). `mysql` reads the
    login from an option file you create (mode 600) with the `DB_*` values
    from `$S/shared/.htaccess`:
    `gzip -dc ~/apps/<app>/backups/<site>/<backup> | mysql --defaults-extra-file=<that file> <DB_NAME>`.
@@ -309,8 +409,18 @@ Over SSH, with `S=~/domains/<domain>/deploy`:
 
 ## Updating the server scripts
 
-A deploy never updates `deploy.sh` or `gate.sh` themselves: it only ships the
-app. **That includes the change that added `ci_env` (EHU-0023-6):** after it
+A deploy never updates `deploy.sh`, `deploy-lib.sh`, `rollback.sh` or
+`gate.sh` themselves: it only ships the app.
+
+**The change that added rollbacks (EHU-0023-5)** changes all four: after it
+is merged, install `deploy-lib.sh` (mode 600) and `rollback.sh` (mode 700)
+first, then `deploy.sh`, then `gate.sh`, each as below, and re-run the
+refusal tests. `deploy.sh` needs `deploy-lib.sh` next to it (without it, a
+deploy is refused before anything changes). Then run drill C1 again on DEV,
+because `deploy.sh` itself changed, and the rollback drills R1–R3 (see
+"Drills").
+
+**The change that added `ci_env` (EHU-0023-6):** after it
 is merged, `bin/deploy.sh` must be copied to the server by hand as below,
 and **first** each site's `bin/sites/<site>.conf` needs its `ci_env=` line
 (`ci_env=testing` in `dev.conf`). In that order nothing breaks: the old
@@ -414,11 +524,21 @@ A branch that only writes a different `REVISION` file doesn't make the
 health check fail: Health reads that same file from the release it serves,
 so the two always agree. Use a broken Health instead, as above.
 
+The rollback drills, from Actions > Rollback > Run workflow (see "Rolling
+back a live release"), right after C1 so the live release has a recorded
+previous release:
+
+| Drill | How | Must end with |
+| --- | --- | --- |
+| R1 code only | after C1: type `code only`, release empty | green, `rolled-back-manual`; Health shows the previous release's commit; database as the baseline |
+| R2 code and database | deploy a throwaway branch whose migration adds a table and changes one row of an unused table (and succeeds), then type `code and database`, release empty | green, `rolled-back-manual`; a `pre-rollback-…` backup (mode 600); the table gone, the row and the migration version as before the deploy |
+| R3 refusals | `confirm` other than the site; `code only` after a deploy like R2's; `code and database` right after R1 (the live release came from a rollback) | each stopped or refused (`failed`) with its message, nothing changed |
+
 If people use the site during the drills, a checksum can differ because of
 their changes; compare with the backup the drill's deploy took instead. See
 also "Known issues" for `tagihan`.
 
-**Every PROD site must pass C1, C2 and C3 before it switches from
+**Every PROD site must pass C1, C2, C3 and R1–R3 before it switches from
 Hostinger's Git deploy to this one.** On PROD the drills touch real users
 and real data, so:
 
@@ -469,6 +589,6 @@ without changes, and two manual runs queue instead of overlapping.
 
 - `bash tests/deploy/gate-test.sh`: which SSH commands `gate.sh` accepts.
   Plain bash, runs anywhere, including Git Bash on Windows.
-- `bash tests/deploy/deploy-test.sh`: real deploys, rollbacks and refusals
+- `bash tests/deploy/deploy-test.sh`: real deploys, automatic and manual (`rollback.sh`) rollbacks, and refusals
   against a scratch database and a `php -S` site, laid out as above. Linux
   only. Runs in CI as the `deploy-scripts` job of the Tests workflow.

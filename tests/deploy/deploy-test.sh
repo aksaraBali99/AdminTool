@@ -93,8 +93,9 @@ mkdir -p "$SITE_DIR"/{releases,shared/uploads/logo,shared/uploads/karyawan,logs}
     "$BIN/sites" "$BACKUP_DIR" "$PUBLIC_HTML"
 # Installed the way the README says: deploy.sh finds the app's folder from
 # where it is, so it is run from the fake bin/, not from the repository.
-cp "$REPO/deploy/server/deploy.sh" "$BIN/"
-chmod 700 "$BIN/deploy.sh"
+cp "$REPO/deploy/server/deploy.sh" "$REPO/deploy/server/deploy-lib.sh" "$REPO/deploy/server/rollback.sh" "$BIN/"
+chmod 700 "$BIN/deploy.sh" "$BIN/rollback.sh"
+chmod 600 "$BIN/deploy-lib.sh"
 echo '<?php echo "OLD SITE";' > "$PUBLIC_HTML/index.php"
 # site_conf [health_url] [ci_env] : writes the site config (defaults: the test
 # site's Health, ci_env=testing).
@@ -273,6 +274,25 @@ class Migration_Rename_token extends CI_Migration
 EOF
 variant token-renamed 29991231000000_deploy_probe.php 29991231000005_rename_token.php
 
+# For the rollback tests: releases whose migration adds a table (and the
+# first also changes data), so "code and database" has something to undo.
+for n in 6 7 8; do
+    cat > "$WORK/2999123100000${n}_rollback_probe_$n.php" <<EOF
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_Rollback_probe_$n extends CI_Migration
+{
+    public function up()
+    {
+        \$this->db->query("CREATE TABLE rollback_probe_$n (id int)");
+        \$this->db->query("UPDATE deploy_probe SET note = 'after-$n' WHERE id = 1");
+    }
+    public function down() {}
+}
+EOF
+    variant "rb$n" 29991231000000_deploy_probe.php "2999123100000${n}_rollback_probe_$n.php"
+done
+
 ALL_OUTPUT="$WORK/all-output.txt"
 deploy() { # <release-id> <tarball> -> $rc, $out
     LAST_DEPLOY="$1" SHOWN=0
@@ -345,7 +365,8 @@ check "maintenance is off" '[ ! -e "$MAINT" ]'
 backup="$(find "$BACKUP_DIR" -name 'pre-deploy-*-r1.sql.gz')"
 check "a pre-deploy backup exists, mode 600" '[ -n "$backup" ] && [ "$(stat -c %a "$backup")" = 600 ]'
 check "the backup is a complete dump" 'gzip -dc "$backup" | tail -n1 | grep -q "Dump completed"'
-check "history.log has a success line" 'grep -q " site=dev release=r1 sha=$(git -C "$REPO" rev-parse HEAD) version=.* backup=pre-deploy-.*-r1.sql.gz result=success\$" "$SITE_DIR/logs/history.log"'
+check "history.log has a success line" 'grep -q " site=dev release=r1 sha=$(git -C "$REPO" rev-parse HEAD) version=.* backup=pre-deploy-.*-r1.sql.gz previous=- result=success\$" "$SITE_DIR/logs/history.log"'
+check "...and the RESULT line says there was no previous release (first deploy)" 'grep -q "^RESULT site=dev release=r1 .* previous=- result=success$" <<< "$out"'
 check "Health was checked for outbound 'blocked' (ci_env=testing)" 'grep -q "f. Health ok .*outbound='\''blocked'\''" "$SITE_DIR/logs/deploy.log"'
 check "the WhatsApp token is overwritten (ci_env=testing)" '[ "$(token_wa)" = DISABLED-NON-PROD ]'
 check "...and the log says so" 'grep -q "\[dev r1\] d. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=testing; 1 row(s) changed)" "$SITE_DIR/logs/deploy.log"'
@@ -358,6 +379,7 @@ check "exits 0" '[ "$rc" -eq 0 ]'
 check "current points to releases/r2" '[ "$(live_release)" = releases/r2 ]'
 check "the migration ran" '[ "$(sql '\''SELECT note FROM deploy_probe WHERE id = 1'\'')" = v2 ]'
 check "Health is ok" 'health_ok'
+check "history.log records r1 as the previous release" 'grep -q " site=dev release=r2 .* previous=r1 result=success$" "$SITE_DIR/logs/history.log"'
 
 # --------------------------------------------------------------- 4. broken migration
 echo
@@ -558,7 +580,7 @@ printf '#!/bin/sh\necho "-- partial dump"\nexit 2\n' > "$WORK/fake-bin/mysqldump
 chmod +x "$WORK/fake-bin/mysqldump"
 PATH="$WORK/fake-bin:$PATH" deploy r5 "$WORK/probe.tar.gz"
 check "a failed backup rolls back" '[ "$rc" -ne 0 ] && result_is r5 rolled-back'
-check "...without a backup name in the result" 'grep -q "^RESULT .* backup= result=rolled-back$" <<< "$out"'
+check "...without a backup name in the result" 'grep -q "^RESULT .* backup= previous=r2 result=rolled-back$" <<< "$out"'
 check "...leaves no partial backup" '[ -z "$(find "$BACKUP_DIR" -name "*.partial")" ]'
 check "...and turns maintenance off" '[ ! -e "$MAINT" ]'
 check "...and the database is untouched" '[ "$(sql "SELECT note FROM deploy_probe WHERE id = 1")" = kept ]'
@@ -607,6 +629,154 @@ check "a testing site whose Health says outbound 'live' rolls back" '[ "$rc" -ne
 check "...and the restore puts the token back as it was before that deploy" '[ "$(token_wa)" = "$WA_TOKEN" ] && grep -q "\[dev r10\] d. WhatsApp token in data_konfig set to DISABLED-NON-PROD" "$SITE_DIR/logs/deploy.log"'
 check "...with r8 live and Health ok" '[ "$(live_release)" = releases/r8 ] && health_ok'
 
+# --------------------------------------------------------------- 7c. rollback
+echo
+echo "7c. Rolling back a live release (rollback.sh)"
+rollback() { # <release-id|previous> <code|code-db> -> $rc, $out
+    LAST_DEPLOY="rollback $1 $2" SHOWN=0
+    SERVER_LOG_FROM="$(( $(wc -l < "$WORK/server.log") + 1 ))"
+    set +e
+    out="$(DEPLOY_ROOT="$ROOT" DEPLOY_PHP="$PHP_BIN" DEPLOY_HEALTH_TRIES="${TRIES:-3}" DEPLOY_HEALTH_WAIT=1 \
+        DEPLOY_SETTLE_SECONDS=0 "$BIN/rollback.sh" dev "$1" "$2" < /dev/null 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$out" >> "$ALL_OUTPUT"
+}
+rb_result_is() { grep -q "^RESULT site=dev action=rollback type=$1 from=$2 to=$3 .* result=$4\$" <<< "$out"; }
+served_last() { grep "router: /index.php/Health?rollback=" "$WORK/server.log" | tail -n1; }
+pre_rollback_count() { find "$BACKUP_DIR" -name 'pre-rollback-*.sql.gz' | wc -l; }
+note() { sql 'SELECT note FROM deploy_probe WHERE id = 1'; }
+db_version() { sql 'SELECT version FROM migrations'; }
+
+# Where 7b left things: r8 live (deployed with previous=r7), r6 r7 r8 kept.
+prep "r8 is live and was deployed with previous=r7" grep -q " release=r8 .* previous=r7 result=success$" "$SITE_DIR/logs/history.log"
+version_before="$(db_version)"
+rb_refused() { # <message regex>: refused before anything changed
+    [ "$rc" -ne 0 ] && grep -q "^RESULT .* result=failed$" <<< "$out" && grep -q "$1" <<< "$out" \
+        && [ "$(live_release)" = releases/r8 ] && [ ! -e "$MAINT" ] \
+        && [ "$(pre_rollback_count)" = 0 ] && [ "$(db_version)" = "$version_before" ]
+}
+
+rollback rx code
+check "refuses a release that isn't on the server" 'rb_refused "Release rx isn.t on the server (kept: r6 r7 r8 )"'
+rollback r8 code
+check "refuses the live release" 'rb_refused "Release r8 is already live"'
+rollback r6 code-db
+check "refuses code and database to anything but the previous release" 'rb_refused "Code and database only goes back to the previous release (r7), not to r6"'
+
+backup_r8="$(cd "$BACKUP_DIR" && ls pre-deploy-*-r8.sql.gz)"
+mv "$BACKUP_DIR/$backup_r8" "$WORK/$backup_r8"
+rollback previous code-db
+check "refuses code and database without the live release's pre-deploy backup" 'rb_refused "The pre-deploy backup of r8 ($backup_r8) is missing"'
+printf 'not a dump' | gzip -c > "$BACKUP_DIR/$backup_r8"
+rollback previous code-db
+check "refuses code and database with an unusable pre-deploy backup" 'rb_refused "The pre-deploy backup of r8 ($backup_r8) is suspiciously small"'
+mv -f "$WORK/$backup_r8" "$BACKUP_DIR/$backup_r8"
+
+cp -a "$SITE_DIR/releases/r7" "$SITE_DIR/releases/rold"
+rm "$SITE_DIR/releases/rold/application/migrations/29991231000000_deploy_probe.php"
+rollback rold code
+check "refuses code only when the database has migrations the target doesn't know" 'rb_refused "The database has migrations release rold doesn.t know .*; use code and database, or ask a developer"'
+rm -rf "$SITE_DIR/releases/rold"
+
+cp -a "$SITE_DIR/releases/r7" "$SITE_DIR/releases/rnoguard"
+rm "$SITE_DIR/releases/rnoguard/application/helpers/outbound_helper.php"
+rollback rnoguard code
+check "refuses a release without the WhatsApp/email guard (found from its files)" 'rb_refused "Release rnoguard is from before the WhatsApp/email guard"'
+rm -rf "$SITE_DIR/releases/rnoguard"
+
+cp "$SITE_DIR/logs/history.log" "$WORK/history.good"
+sed -i '/ release=r8 .* result=success$/s/ previous=r7//' "$SITE_DIR/logs/history.log"
+rollback previous code
+check "refuses 'previous' when the live release's deploy didn't record one" 'rb_refused "The previous release isn.t recorded for live release r8"'
+cp "$WORK/history.good" "$SITE_DIR/logs/history.log"
+
+flock "$SITE_DIR/.deploy.lock" sleep 5 &
+lock_pid=$!
+sleep 0.5
+rollback previous code
+check "refuses while a deploy is running (same lock)" 'rb_refused "Another deploy of dev is running"'
+wait "$lock_pid"
+
+site_conf "" production
+rollback previous code
+site_conf
+check "refuses when ci_env and CI_ENV disagree" 'rb_refused "CI_ENV in shared/.htaccess is .testing. but"'
+
+set +e; "$BIN/rollback.sh" dev previous both < /dev/null > /dev/null 2>&1; usage_rc=$?; set -e
+check "refuses an unknown type before doing anything (usage, exit 2)" '[ "$usage_rc" = 2 ]'
+
+# Code only, back to the previous release.
+rollback previous code
+check "code only: rolls back to the previous release" '[ "$rc" -eq 0 ] && rb_result_is code r8 r7 rolled-back-manual && [ "$(live_release)" = releases/r7 ]'
+check "...checked Health on the target, which really serves r7" 'grep -q "e. Health ok .*outbound='\''blocked'\''" <<< "$out" && served_last | grep -q "releases/r7"'
+check "...maintenance off, database and backups untouched" '[ ! -e "$MAINT" ] && [ "$(db_version)" = "$version_before" ] && [ "$(pre_rollback_count)" = 0 ]'
+check "...history.log has a rolled-back-manual line" 'grep -q " site=dev action=rollback type=code from=r8 to=r7 .* backup= result=rolled-back-manual$" "$SITE_DIR/logs/history.log"'
+
+# The live release came from a rollback: code and database is refused.
+rollback previous code-db
+check "refuses code and database when the live release came from a rollback" '[ "$rc" -ne 0 ] && grep -q "The live release came from a rollback; its backup is too old to restore safely; ask a developer" <<< "$out" && [ "$(live_release)" = releases/r7 ] && [ ! -e "$MAINT" ]'
+
+# Code only also goes forward again, to a newer kept release.
+rollback r8 code
+check "code only: goes forward again to r8" '[ "$rc" -eq 0 ] && rb_result_is code r7 r8 rolled-back-manual && [ "$(live_release)" = releases/r8 ]'
+
+# Code and database: a deploy that added a table and changed data.
+prep "note before r11" sql "UPDATE deploy_probe SET note = 'before-r11' WHERE id = 1"
+deploy r11 "$WORK/rb6.tar.gz"
+prep "r11 deployed" test "$rc" -eq 0
+version_r11="$(db_version)"
+rollback previous code
+check "code only is refused after r11's migration" '[ "$rc" -ne 0 ] && grep -q "The database has migrations release r8 doesn.t know (database at 29991231000006, r8.s newest is 29991231000000); use code and database, or ask a developer" <<< "$out" && [ "$(live_release)" = releases/r11 ]'
+rollback previous code-db
+check "code and database: rolls back to r8" '[ "$rc" -eq 0 ] && rb_result_is code-db r11 r8 rolled-back-manual && [ "$(live_release)" = releases/r8 ] && served_last | grep -q "releases/r8"'
+pre_rb="$(find "$BACKUP_DIR" -name 'pre-rollback-*-r11.sql.gz')"
+check "...made a pre-rollback backup first: mode 600, complete" '[ -n "$pre_rb" ] && [ "$(stat -c %a "$pre_rb")" = 600 ] && gzip -dc "$pre_rb" | tail -n1 | grep -q "Dump completed"'
+check "...which is named in the result" 'grep -q "^RESULT .* backup=$(basename "$pre_rb") result=rolled-back-manual$" <<< "$out"'
+check "...and holds the state before the rollback" 'gzip -dc "$pre_rb" | grep -q "CREATE TABLE \`rollback_probe_6\`"'
+check "...dropped the table r11 added and restored the data and migration version" 'grep -q "Dropping table rollback_probe_6 (not in the backup)" <<< "$out" && ! table_exists rollback_probe_6 && [ "$(note)" = before-r11 ] && [ "$(db_version)" = 29991231000000 ]'
+check "...maintenance off" '[ ! -e "$MAINT" ]'
+
+# Code only: Health fails on the target -> back to the release that was live.
+echo production > "$FORCE_CI_ENV"
+TRIES=2 rollback r7 code
+rm -f "$FORCE_CI_ENV"
+check "code only, Health fails: switched back, maintenance off, rollback-failed" '[ "$rc" -ne 0 ] && rb_result_is code r8 r7 rollback-failed && grep -q "Rollback undone: r8 is live again" <<< "$out" && [ "$(live_release)" = releases/r8 ] && [ ! -e "$MAINT" ]'
+
+# Code and database: Health fails -> the pre-rollback backup is restored.
+deploy r12 "$WORK/rb7.tar.gz"
+prep "r12 deployed" test "$rc" -eq 0
+echo production > "$FORCE_CI_ENV"
+TRIES=2 rollback previous code-db
+rm -f "$FORCE_CI_ENV"
+check "code and database, Health fails: restores the pre-rollback backup and switches back" '[ "$rc" -ne 0 ] && rb_result_is code-db r12 r8 rollback-failed && [ "$(live_release)" = releases/r12 ] && grep -q "The database is back as it was before the rollback" <<< "$out"'
+check "...the database is r12'\''s again, maintenance off" 'table_exists rollback_probe_7 && [ "$(note)" = after-7 ] && [ "$(db_version)" = 29991231000007 ] && [ ! -e "$MAINT" ]'
+
+# ...and if restoring the pre-rollback backup fails too: rollback-incomplete.
+# A trigger created by the admin account is in the pre-rollback dump; the
+# site's database user can't recreate it (another DEFINER), so that restore
+# fails. r13's pre-deploy backup has no trigger, so the first restore works.
+deploy r13 "$WORK/rb8.tar.gz"
+prep "r13 deployed" test "$rc" -eq 0
+prep "add a trigger only the admin account can recreate" admin_sql "$DB" -e "CREATE TRIGGER rollback_test_trigger BEFORE UPDATE ON deploy_probe FOR EACH ROW SET NEW.note = NEW.note"
+echo production > "$FORCE_CI_ENV"
+TRIES=2 rollback previous code-db
+rm -f "$FORCE_CI_ENV"
+check "code and database, Health and the undo fail: rollback-incomplete, maintenance left on" '[ "$rc" -ne 0 ] && rb_result_is code-db r13 r12 rollback-incomplete && [ -e "$MAINT" ] && grep -q "maintenance is left ON" <<< "$out"'
+check "...code switched back to r13, pre-rollback backup named for the fix by hand" '[ "$(live_release)" = releases/r13 ] && grep -q "The pre-rollback backup is .*pre-rollback-.*-r13.sql.gz" <<< "$out"'
+# Fixed by hand, as in the README: load the pre-rollback backup (here with
+# the admin account, which may recreate the trigger), then maintenance off.
+pre_rb13="$(find "$BACKUP_DIR" -name 'pre-rollback-*-r13.sql.gz')"
+gzip -dc "$pre_rb13" | admin_sql "$DB"
+prep "remove the test trigger" admin_sql "$DB" -e "DROP TRIGGER IF EXISTS rollback_test_trigger"
+rm -f "$MAINT"
+check "...after the fix by hand: r13's database, Health ok" 'table_exists rollback_probe_8 && [ "$(db_version)" = 29991231000008 ] && health_ok'
+
+# Pre-rollback backups are never deleted automatically.
+pre_rollbacks="$(pre_rollback_count)"
+deploy r14 "$WORK/rb8.tar.gz"
+check "a later deploy keeps every pre-rollback backup" '[ "$rc" -eq 0 ] && [ "$(pre_rollback_count)" = "$pre_rollbacks" ] && [ "$pre_rollbacks" -ge 3 ]'
+
 # --------------------------------------------------------------- 8. secrets
 echo
 echo "8. No secrets left or logged"
@@ -618,7 +788,7 @@ check "the database name and user are in no log or output (masked)" '! grep -rqF
 # restore skip dropping new tables, found in DEV drill C2). CI has /dev/fd,
 # so only this check can catch it.
 check "the server scripts use no process substitution (no /dev/fd on the server)" \
-    '! grep -nE "<\(|>\(" "$REPO/deploy/server/deploy.sh" "$REPO/deploy/server/gate.sh"'
+    '! grep -nE "<\(|>\(" "$REPO/deploy/server/deploy.sh" "$REPO/deploy/server/deploy-lib.sh" "$REPO/deploy/server/rollback.sh" "$REPO/deploy/server/gate.sh"'
 check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 15 ]'
 
 echo
