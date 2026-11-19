@@ -11,7 +11,10 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * Answers JSON, HTTP 200 when everything is fine, 503 otherwise:
  *   {"status":"ok","version":"1.1.1","revision":"<commit sha>","php":"8.3",
  *    "database":"ok","migrations":"ok","db_version":"20261028000000",
- *    "maintenance":false}
+ *    "maintenance":false,"outbound":"blocked"}
+ *
+ * "outbound" is "live" only in production, where WhatsApp/email are really
+ * sent, and "blocked" everywhere else (outbound_is_live()).
  *
  * "revision" is the full commit sha from the REVISION file the deploy's
  * build writes next to index.php ("unknown" without it, e.g. locally).
@@ -42,6 +45,9 @@ class Health extends CI_Controller
             'migrations' => 'unknown',
             'db_version' => null,
             'maintenance' => file_exists(MAINTENANCE_FILE),
+            // Whether this site sends WhatsApp/email at all (production
+            // only, see application/helpers/outbound_helper.php).
+            'outbound' => outbound_is_live(ENVIRONMENT) ? 'live' : 'blocked',
         );
 
         // Never let a database problem turn into an error page here:

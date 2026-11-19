@@ -59,6 +59,18 @@ final class HealthAndMaintenanceTest extends TestCase
         $this->assertFalse($body['maintenance']);
     }
 
+    public function test_health_reports_outbound_blocked_outside_production(): void
+    {
+        $body = json_decode((string) ApiClient::anonymous()->get('Health')->getBody(), true);
+
+        $this->assertArrayHasKey('outbound', $body);
+        $this->assertSame(
+            'blocked',
+            $body['outbound'],
+            'The test server runs with CI_ENV=testing: WhatsApp/email must be blocked there.'
+        );
+    }
+
     public function test_maintenance_mode_blocks_pages_but_not_health(): void
     {
         touch($this->flag());
