@@ -11,6 +11,7 @@
 # Where things are (<app> is the folder above this script's bin/, so
 # nothing here names a particular app):
 #   ~/apps/<app>/bin/sites/<site>.conf    domain=<the site's domain>
+#                                         ci_env=<production|testing|development>
 #   ~/apps/<app>/backups/<site>/          database backups
 #   ~/domains/<domain>/deploy/            releases/, shared/, logs/, current
 #   ~/domains/<domain>/public_html     -> ~/domains/<domain>/deploy/current
@@ -23,10 +24,12 @@
 #      is moved to deploy/public_html.pre-deploy and replaced by a link to
 #      deploy/current
 #   c. database backup to ~/apps/<app>/backups/<site>/pre-deploy-<UTC time>-<id>.sql.gz
-#   d. php index.php migrate in the new release
+#   d. php index.php migrate in the new release; on a site whose ci_env isn't
+#      production, then disable the WhatsApp token in data_konfig
 #   e. "current" -> releases/<id>, switched atomically
 #   f. Health must answer "status":"ok", the release's VERSION and its
-#      REVISION (full commit sha), i.e. the new release is what is served;
+#      REVISION (full commit sha), i.e. the new release is what is served,
+#      and "outbound" "live" on production, "blocked" anywhere else;
 #      retried for about 3 minutes
 #   g. maintenance off; keep the newest 3 releases and 5 pre-deploy backups
 #   h. on any failure after (b): restore the database if migrations started,
@@ -100,6 +103,7 @@ RESTORE_WORK=""
 SHA="-"
 VERSION="-"
 DB_HOST="" DB_PORT="" DB_USER="" DB_PASS="" DB_NAME="" CI_ENV_VALUE=""
+SITE_CI_ENV="" EXPECTED_OUTBOUND=""
 DOMAIN="" PUBLIC_HTML="" HEALTH_URL="" verdict=""
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -378,6 +382,27 @@ CI_ENV_VALUE="$(htaccess_get CI_ENV)"
     || die "shared/.htaccess must set DB_HOST, DB_USER, DB_PASS and DB_NAME"
 [ -z "$DB_PORT" ] || [[ "$DB_PORT" =~ ^[0-9]+$ ]] || die "DB_PORT must be a number"
 
+# What kind of site this is. The site config says what it must be; the
+# site's .htaccess says what the app actually runs as. They must agree, so a
+# copied or half-edited .htaccess can't turn a DEV site into one that sends
+# real WhatsApp messages, or a PROD site into one that silently doesn't.
+SITE_CI_ENV="$(conf_get ci_env)"
+case "$SITE_CI_ENV" in
+    production|testing|development) ;;
+    "") die "$SITE_CONF has no ci_env=; add ci_env=production, ci_env=testing or ci_env=development (see deploy/server/README.md)" ;;
+    *) die "$SITE_CONF has ci_env=$SITE_CI_ENV; it must be exactly production, testing or development" ;;
+esac
+if [ "$CI_ENV_VALUE" != "$SITE_CI_ENV" ]; then
+    # Only a known value is named: nothing else from .htaccess is ever logged.
+    case "$CI_ENV_VALUE" in
+        production|testing|development) shown="'$CI_ENV_VALUE'" ;;
+        "") shown="not set" ;;
+        *) shown="another value" ;;
+    esac
+    die "CI_ENV in shared/.htaccess is $shown but $SITE_CONF says ci_env=$SITE_CI_ENV; make them the same (SetEnv CI_ENV $SITE_CI_ENV in shared/.htaccess), or fix ci_env if the site config is wrong"
+fi
+if [ "$SITE_CI_ENV" = production ]; then EXPECTED_OUTBOUND=live; else EXPECTED_OUTBOUND=blocked; fi
+
 if [ -L "$PUBLIC_HTML" ]; then
     [ "$(readlink "$PUBLIC_HTML")" = "$CURRENT" ] || die "$PUBLIC_HTML is a link, but not to $CURRENT"
     [ -L "$CURRENT" ] || die "$CURRENT is not a link"
@@ -488,6 +513,29 @@ printf '%s\n' "$migrate_out" | tail -n 40 | while IFS= read -r line; do say "   
 [ "$migrate_rc" -eq 0 ] || die "Migrations failed (exit $migrate_rc)"
 say "d. Migrations done"
 
+# Outside production the app never sends WhatsApp (outbound_is_live()), but a
+# DEV/test database is often a copy of PROD's, with PROD's real WhatsApp
+# token in it. Overwrite it, so the token can't be used from this database
+# even by code that skips the app's gate. Runs after migrations so it also
+# covers a token a migration might add, and before the switch so a failure
+# here rolls back like any other step (the restore then puts the database,
+# token included, back as it was before the deploy).
+#
+# If email/SMTP settings (or any other messaging credential) are ever stored
+# in the database, clear them here too.
+if [ "$SITE_CI_ENV" != production ]; then
+    STEP=disable-messaging
+    new_errfile || die "Could not create a file for error output"
+    if ! changed="$(mysql --defaults-extra-file="$OPT" -N -B \
+        -e "UPDATE data_konfig SET token_wa = 'DISABLED-NON-PROD'; SELECT ROW_COUNT();" \
+        "$DB_NAME" < /dev/null 2> "$ERRF")"; then
+        log_errfile mysql
+        die "Could not disable the WhatsApp token in data_konfig"
+    fi
+    log_errfile mysql
+    say "d. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=$SITE_CI_ENV; ${changed:-0} row(s) changed)"
+fi
+
 # ---------------------------------------------------------------- e. switch
 STEP=switch
 if [ "$FIRST_RUN" = 0 ]; then
@@ -513,15 +561,15 @@ for ((i = 1; i <= HEALTH_TRIES; i++)); do
         $s = function ($k) use ($j) { return isset($j[$k]) ? var_export($j[$k], true) : "missing"; };
         echo "status=", $s("status"), " version=", $s("version"), " database=", $s("database"),
              " migrations=", $s("migrations"), " maintenance=", $s("maintenance"),
-             " revision=", $s("revision");
+             " revision=", $s("revision"), " outbound=", $s("outbound");
         exit(($j["status"] ?? null) === "ok" && ($j["version"] ?? null) === $argv[1]
-            && ($j["revision"] ?? null) === $argv[2] ? 0 : 1);
-    ' -- "$VERSION" "$SHA" < "$TMP_BODY" 2>/dev/null)"; then
+            && ($j["revision"] ?? null) === $argv[2] && ($j["outbound"] ?? null) === $argv[3] ? 0 : 1);
+    ' -- "$VERSION" "$SHA" "$EXPECTED_OUTBOUND" < "$TMP_BODY" 2>/dev/null)"; then
         healthy=1
         say "f. Health ok (HTTP $code, $verdict)"
         break
     fi
-    say "f. Health attempt $i/$HEALTH_TRIES not ok (HTTP $code, ${verdict:-no answer}; want version '$VERSION', revision '$SHA')"
+    say "f. Health attempt $i/$HEALTH_TRIES not ok (HTTP $code, ${verdict:-no answer}; want version '$VERSION', revision '$SHA', outbound '$EXPECTED_OUTBOUND')"
     if [ "$i" -lt "$HEALTH_TRIES" ]; then sleep "$HEALTH_WAIT"; fi
 done
 [ "$healthy" = 1 ] || die "Health check failed"
