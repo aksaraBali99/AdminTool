@@ -555,16 +555,24 @@ also "Known issues" for `tagihan`.
 Hostinger's Git deploy to this one.** On PROD the drills touch real users
 and real data, so:
 
-- run them at a quiet time and announce them: C2 and C3 show the
-  maintenance page, C3 for about 3 minutes;
-- for C2, change one row of a table that site doesn't use, and look up
-  which one on that site's own database first;
+- run them at a quiet time and announce them: C2, C3 and the rollback
+  drills show the maintenance page, C3 and R4 for about 3 minutes;
+- for C2, R2 and R4, change one row of a table that site doesn't use, and
+  look up which one on that site's own database first;
+- **R2 and R4 throw away real data:** their `code and database` rollback
+  puts the database back to the drill deploy's pre-deploy backup, so
+  everything people enter between that deploy and the rollback is gone from
+  the live database (it is only in the pre-rollback backup). Run them only
+  when nobody is using the site, and keep the time between the drill deploy
+  and the rollback as short as possible;
+- on PROD, delete the drills' pre-rollback backups only after checking that
+  nothing in them is needed (on DEV they were simply deleted);
 - take the baseline right before each run;
-- C2 and C3 restore the site's database, which also changes how some
-  `tagihan.tipe` values are stored (see "Known issues"); expect that in the
-  comparison.
+- C2, C3, R2 and R4 restore the site's database, which also changes how
+  some `tagihan.tipe` values are stored (see "Known issues"); expect that in
+  the comparison.
 
-After all three drills pass on a site, delete its
+After all drills (C1–C3 and R1–R4) pass on a site, delete its
 `deploy/public_html.pre-deploy`; from then on, going back works as described
 in "Going back to Hostinger's Git deploy".
 
