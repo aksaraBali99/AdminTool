@@ -12,6 +12,10 @@ name: Deploy
 #     a person starts it, and the "dev" environment only accepts runs of
 #     this workflow from main.
 #
+# On the server, the key may only run ~/apps/admintool/bin/gate.sh, which
+# hands the release to deploy.sh next to it. The site itself lives in
+# ~/domains/admin-dev.englishhubbali.com/deploy/.
+#
 # PROD sites still use Hostinger's Git deploy.
 
 on:
@@ -125,5 +129,5 @@ jobs:
             echo "| --- | --- | --- | --- | --- | --- |"
             echo "| dev (admin-dev.englishhubbali.com) | $VERSION | \`${SHA:0:12}\` | \`$RELEASE_ID\` | ${backup:+\`$backup\`} | $shown |"
             echo
-            echo "Server logs: \`~/sites/dev/logs/deploy.log\` and \`~/sites/dev/logs/history.log\`."
+            echo "Server logs: \`~/domains/admin-dev.englishhubbali.com/deploy/logs/\` (deploy.log and history.log)."
           } >> "$GITHUB_STEP_SUMMARY"

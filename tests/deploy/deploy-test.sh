@@ -28,7 +28,12 @@ SITE_URL="http://127.0.0.1:$PORT"
 
 WORK="$(mktemp -d)"
 ROOT="$WORK/home"
-SITE_DIR="$ROOT/sites/dev"
+# Not "admintool" on purpose: nothing in deploy.sh may depend on the app's name.
+APP_DIR="$ROOT/apps/someapp"
+BIN="$APP_DIR/bin"
+SITE_CONF="$BIN/sites/dev.conf"
+BACKUP_DIR="$APP_DIR/backups/dev"
+SITE_DIR="$ROOT/domains/dev.test/deploy"
 PUBLIC_HTML="$ROOT/domains/dev.test/public_html"
 MAINT="$SITE_DIR/shared/maintenance.on"
 SERVER_PID=""
@@ -53,15 +58,45 @@ check() { # <description> '<shell expression>'
         pass=$((pass + 1)); echo "ok   - $description"
     else
         fail=$((fail + 1)); echo "FAIL - $description"
+        show_last_deploy
+    fi
+}
+
+# On the first failed check after a deploy: what that deploy printed and what
+# the fake web server logged meanwhile, so a failure explains itself in CI.
+# (Never holds secrets: section 8 checks the password is in no output.)
+LAST_DEPLOY="" SHOWN=1 SERVER_LOG_FROM=1
+show_last_deploy() {
+    [ "$SHOWN" = 0 ] || return 0
+    SHOWN=1
+    echo "    --- output of deploy $LAST_DEPLOY (exit $rc)"
+    printf '%s\n' "$out" | sed 's/^/    | /'
+    echo "    --- web server log during that deploy (last 40 lines)"
+    tail -n +"$SERVER_LOG_FROM" "$WORK/server.log" 2>/dev/null | tail -n 40 | sed 's/^/    | /'
+    echo "    ---"
+}
+
+# Setup steps between sections: a failure is counted and shown, but doesn't
+# stop the script (set -e), so the later sections still run and report.
+prep() { # <description> <command>...
+    local description="$1"
+    shift
+    if ! "$@"; then
+        fail=$((fail + 1)); echo "FAIL - setup: $description"
+        show_last_deploy
     fi
 }
 
 # --------------------------------------------------------------- the fake server
 echo "Setting up a fake site in $ROOT"
 mkdir -p "$SITE_DIR"/{releases,shared/uploads/logo,shared/uploads/karyawan,logs} \
-    "$ROOT/backups/dev" "$PUBLIC_HTML"
+    "$BIN/sites" "$BACKUP_DIR" "$PUBLIC_HTML"
+# Installed the way the README says: deploy.sh finds the app's folder from
+# where it is, so it is run from the fake bin/, not from the repository.
+cp "$REPO/deploy/server/deploy.sh" "$BIN/"
+chmod 700 "$BIN/deploy.sh"
 echo '<?php echo "OLD SITE";' > "$PUBLIC_HTML/index.php"
-printf 'domain=dev.test\nhealth_url=%s/index.php/Health\n' "$SITE_URL" > "$SITE_DIR/site.conf"
+printf 'domain=dev.test\nhealth_url=%s/index.php/Health\n' "$SITE_URL" > "$SITE_CONF"
 cat > "$SITE_DIR/shared/.htaccess" <<EOF
 # Like a real site's .htaccess: settings inside a block, a commented-out line.
 <IfModule mod_env.c>
@@ -89,15 +124,26 @@ BASE_VERSION="$(sql 'SELECT version FROM migrations')"
 
 # The site as the web server would run it: settings from the environment
 # (SetEnv), docroot = whatever public_html points to now.
+# No caches that keep serving the old files for a moment after a link
+# changes: realpath_cache_size=0, and opcache off. opcache.enable_cli=0 is not
+# enough: it only covers plain CLI, and php -S (SAPI cli-server) follows
+# opcache.enable. With opcache on, the router's "require public_html/index.php"
+# got the previous site's compiled file for up to opcache.revalidate_freq
+# (2 s), so the deploy's 3 quick Health tries saw "OLD SITE" and rolled back.
+# Real deploys handle the same effect with a PHP restart, about 3 minutes of
+# tries, and by checking Health reports the new release's revision.
 DB_HOST="$TEST_DB_HOST" DB_PORT="$TEST_DB_PORT" DB_USER="$DB_USER" DB_PASS="$DB_PASS" DB_NAME="$DB" \
     CI_ENV=testing MAINTENANCE_FILE="$MAINT" DEPLOY_TEST_DOCROOT="$PUBLIC_HTML" \
-    "$PHP_BIN" -d realpath_cache_size=0 -S "127.0.0.1:$PORT" -t "$WORK" "$REPO/tests/deploy/router.php" \
+    "$PHP_BIN" -d realpath_cache_size=0 -d opcache.enable=0 \
+    -S "127.0.0.1:$PORT" -t "$WORK" "$REPO/tests/deploy/router.php" \
     > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 50); do
     curl -s -o /dev/null "$SITE_URL/" && break
     sleep 0.1
 done
+echo "Test site: $(grep -m1 -o 'sapi=[^]]*' "$WORK/server.log" || echo "no router line")"
+check "the test site runs without opcache (else it may serve the previous release)" 'grep -m1 "router: " "$WORK/server.log" | grep -q "active=no"'
 
 # --------------------------------------------------------------- releases
 echo "Building release tarballs"
@@ -167,9 +213,11 @@ tar -czf "$WORK/wrong-revision.tar.gz" -C "$WORK/variant-wrong-revision" .
 
 ALL_OUTPUT="$WORK/all-output.txt"
 deploy() { # <release-id> <tarball> -> $rc, $out
+    LAST_DEPLOY="$1" SHOWN=0
+    SERVER_LOG_FROM="$(( $(wc -l < "$WORK/server.log") + 1 ))"
     set +e
     out="$(DEPLOY_ROOT="$ROOT" DEPLOY_PHP="$PHP_BIN" DEPLOY_HEALTH_TRIES="${TRIES:-3}" DEPLOY_HEALTH_WAIT=1 \
-        DEPLOY_SETTLE_SECONDS=0 bash "$REPO/deploy/server/deploy.sh" dev "$1" < "$2" 2>&1)"
+        DEPLOY_SETTLE_SECONDS=0 "$BIN/deploy.sh" dev "$1" < "$2" 2>&1)"
     rc=$?
     set -e
     printf '%s\n' "$out" >> "$ALL_OUTPUT"
@@ -179,7 +227,7 @@ live_release() { readlink "$SITE_DIR/current"; }
 health() { curl -s "$SITE_URL/index.php/Health"; }
 health_ok() { health | grep -q '"status":"ok"'; }
 table_exists() { [ -n "$(sql "SHOW TABLES LIKE '$1'")" ]; }
-backup_count() { find "$ROOT/backups/dev" -name 'pre-deploy-*.sql.gz' | wc -l; }
+backup_count() { find "$BACKUP_DIR" -name 'pre-deploy-*.sql.gz' | wc -l; }
 
 # --------------------------------------------------------------- 1. first deploy fails
 echo
@@ -204,7 +252,9 @@ check "reports success" 'result_is r1 success'
 check "public_html is a link to current" '[ -L "$PUBLIC_HTML" ] && [ "$(readlink "$PUBLIC_HTML")" = "$SITE_DIR/current" ]'
 check "current points to releases/r1" '[ "$(live_release)" = releases/r1 ]'
 check "the old folder is kept as public_html.pre-deploy" '[ "$(cat "$SITE_DIR/public_html.pre-deploy/index.php")" = '\''<?php echo "OLD SITE";'\'' ]'
-check "the release links the shared .htaccess and uploads" '[ "$(readlink "$SITE_DIR/releases/r1/.htaccess")" = "$SITE_DIR/shared/.htaccess" ] && [ "$(readlink "$SITE_DIR/releases/r1/uploads")" = "$SITE_DIR/shared/uploads" ]'
+check "the release links the shared .htaccess and uploads (relative links)" '[ "$(readlink "$SITE_DIR/releases/r1/.htaccess")" = ../../shared/.htaccess ] && [ "$(readlink "$SITE_DIR/releases/r1/uploads")" = ../../shared/uploads ]'
+check "...which resolve to the shared files" '[ "$(readlink -f "$SITE_DIR/releases/r1/.htaccess")" = "$(readlink -f "$SITE_DIR/shared/.htaccess")" ] && [ "$(readlink -f "$PUBLIC_HTML/uploads")" = "$(readlink -f "$SITE_DIR/shared/uploads")" ]'
+check "the backup is in the app's backups folder" '[ -n "$(find "$BACKUP_DIR" -name '\''pre-deploy-*-r1.sql.gz'\'')" ]'
 check "REVISION holds the commit" '[ "$(cat "$SITE_DIR/releases/r1/REVISION")" = "$(git -C "$REPO" rev-parse HEAD)" ]'
 check "Health is ok with the release's version" 'health_ok'
 check "Health shows the deployed commit as revision" 'health | grep -q "\"revision\":\"$(git -C "$REPO" rev-parse HEAD)\""'
@@ -213,7 +263,7 @@ check "PHP restart was requested after the switch" '[ -f "$ROOT/.lsphp_restart.t
 check "Health was checked while maintenance was on" 'grep -q '\''f. Health ok .*maintenance=true'\'' "$SITE_DIR/logs/deploy.log"'
 check "the site answers normally (not 503)" '[ "$(curl -s -o /dev/null -w '\''%{http_code}'\'' "$SITE_URL/index.php/Login")" = 200 ]'
 check "maintenance is off" '[ ! -e "$MAINT" ]'
-backup="$(find "$ROOT/backups/dev" -name 'pre-deploy-*-r1.sql.gz')"
+backup="$(find "$BACKUP_DIR" -name 'pre-deploy-*-r1.sql.gz')"
 check "a pre-deploy backup exists, mode 600" '[ -n "$backup" ] && [ "$(stat -c %a "$backup")" = 600 ]'
 check "the backup is a complete dump" 'gzip -dc "$backup" | tail -n1 | grep -q "Dump completed"'
 check "history.log has a success line" 'grep -q " site=dev release=r1 sha=$(git -C "$REPO" rev-parse HEAD) version=.* backup=pre-deploy-.*-r1.sql.gz result=success\$" "$SITE_DIR/logs/history.log"'
@@ -230,7 +280,7 @@ check "Health is ok" 'health_ok'
 # --------------------------------------------------------------- 4. broken migration
 echo
 echo "4. Deploy with a broken migration"
-sql "UPDATE deploy_probe SET note = 'before' WHERE id = 1"
+prep "set deploy_probe.note to 'before'" sql "UPDATE deploy_probe SET note = 'before' WHERE id = 1"
 deploy r3 "$WORK/broken.tar.gz"
 check "exits non-zero" '[ "$rc" -ne 0 ]'
 check "reports rolled-back" 'result_is r3 rolled-back'
@@ -247,11 +297,11 @@ check "history.log has a rolled-back line" 'grep -q '\'' release=r3 .* result=ro
 # --------------------------------------------------------------- 5. failed health check
 echo
 echo "5. Deploy whose health check fails"
-cp "$SITE_DIR/site.conf" "$WORK/site.conf.good"
-printf 'domain=dev.test\nhealth_url=http://127.0.0.1:9/index.php/Health\n' > "$SITE_DIR/site.conf"
-sql "UPDATE deploy_probe SET note = 'kept' WHERE id = 1"
+cp "$SITE_CONF" "$WORK/site.conf.good"
+printf 'domain=dev.test\nhealth_url=http://127.0.0.1:9/index.php/Health\n' > "$SITE_CONF"
+prep "set deploy_probe.note to 'kept'" sql "UPDATE deploy_probe SET note = 'kept' WHERE id = 1"
 TRIES=2 deploy r4 "$WORK/probe.tar.gz"
-cp "$WORK/site.conf.good" "$SITE_DIR/site.conf"
+cp "$WORK/site.conf.good" "$SITE_CONF"
 check "exits non-zero" '[ "$rc" -ne 0 ]'
 check "reports rolled-back" 'result_is r4 rolled-back'
 check "says the health check failed" 'grep -q '\''ERROR: Health check failed'\'' <<< "$out"'
@@ -299,6 +349,37 @@ deploy r5 "$WORK/probe.tar.gz"
 check "a second deploy at the same time is refused" '[ "$rc" -ne 0 ] && grep -q '\''Another deploy of dev is running'\'' <<< "$out"'
 wait "$lock_pid"
 
+# A MAINTENANCE_FILE outside shared/, e.g. still pointing at an old layout.
+cp "$SITE_DIR/shared/.htaccess" "$WORK/htaccess.good"
+mkdir -p "$WORK/old-layout"
+sed -i "s|SetEnv MAINTENANCE_FILE .*|SetEnv MAINTENANCE_FILE $WORK/old-layout/maintenance.on|" "$SITE_DIR/shared/.htaccess"
+deploy r5 "$WORK/probe.tar.gz"
+cp "$WORK/htaccess.good" "$SITE_DIR/shared/.htaccess"
+check "a MAINTENANCE_FILE outside shared/ is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "MAINTENANCE_FILE must be in" <<< "$out" && [ ! -e "$WORK/old-layout/maintenance.on" ]'
+
+cp "$SITE_CONF" "$WORK/site.conf.good"
+printf 'domain=../dev.test\n' > "$SITE_CONF"
+deploy r5 "$WORK/probe.tar.gz"
+check "a domain with .. in the site config is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "has no valid domain=" <<< "$out"'
+rm "$SITE_CONF"
+deploy r5 "$WORK/probe.tar.gz"
+check "a site without a site config is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "Missing .*sites/dev.conf" <<< "$out"'
+cp "$WORK/site.conf.good" "$SITE_CONF"
+check "...and r2 is still live" '[ "$(live_release)" = releases/r2 ] && [ ! -e "$SITE_DIR/releases/r5" ]'
+
+# The live release still linked to the shared files of the folder it was
+# copied from (an old layout): a rollback would land on those.
+mkdir -p "$WORK/old-shared/uploads" && cp "$SITE_DIR/shared/.htaccess" "$WORK/old-shared/.htaccess"
+for f in .htaccess uploads; do
+    ln -sfn "$WORK/old-shared/$f" "$SITE_DIR/releases/r2/$f.new" && mv -T "$SITE_DIR/releases/r2/$f.new" "$SITE_DIR/releases/r2/$f"
+    deploy r5 "$WORK/probe.tar.gz"
+    check "a live release whose $f leads elsewhere is refused" '[ "$rc" -ne 0 ] && result_is r5 failed && grep -q "live release.s $f doesn.t lead to" <<< "$out"'
+    check "...says nothing was changed" 'grep -q "Nothing was changed" <<< "$out" && ! grep -q "Rolled back:" <<< "$out"'
+    check "...and leaves maintenance off" '[ ! -e "$MAINT" ]'
+    ln -sfn "../../shared/$f" "$SITE_DIR/releases/r2/$f.new" && mv -T "$SITE_DIR/releases/r2/$f.new" "$SITE_DIR/releases/r2/$f"
+done
+check "...and r2 is still live" '[ "$(live_release)" = releases/r2 ] && [ ! -e "$SITE_DIR/releases/r5" ] && health_ok'
+
 printf 'not a tarball' > "$WORK/junk.tar.gz"
 deploy r5 "$WORK/junk.tar.gz"
 check "a broken tarball is refused" '[ "$rc" -ne 0 ] && result_is r5 failed'
@@ -314,7 +395,7 @@ chmod +x "$WORK/fake-bin/mysqldump"
 PATH="$WORK/fake-bin:$PATH" deploy r5 "$WORK/probe.tar.gz"
 check "a failed backup rolls back" '[ "$rc" -ne 0 ] && result_is r5 rolled-back'
 check "...without a backup name in the result" 'grep -q "^RESULT .* backup= result=rolled-back$" <<< "$out"'
-check "...leaves no partial backup" '[ -z "$(find "$ROOT/backups/dev" -name "*.partial")" ]'
+check "...leaves no partial backup" '[ -z "$(find "$BACKUP_DIR" -name "*.partial")" ]'
 check "...and turns maintenance off" '[ ! -e "$MAINT" ]'
 check "...and the database is untouched" '[ "$(sql "SELECT note FROM deploy_probe WHERE id = 1")" = kept ]'
 
@@ -328,12 +409,12 @@ for id in r5 r6 r7; do deploy "$id" "$WORK/probe.tar.gz"; done
 check "the last deploys succeeded" '[ "$rc" -eq 0 ] && [ "$(live_release)" = releases/r7 ]'
 check "the newest 3 releases are kept" '[ "$(cd "$SITE_DIR/releases" && ls | sort | tr '\''\n'\'' '\'' '\'')" = "r5 r6 r7 " ]'
 check "the newest 5 backups are kept" '[ "$(backup_count)" = 5 ]'
-check "the newest backup is r7's" '[ "$(cd "$ROOT/backups/dev" && ls | sort | tail -n1)" = "$(cd "$ROOT/backups/dev" && ls *-r7.sql.gz)" ]'
+check "the newest backup is r7's" '[ "$(cd "$BACKUP_DIR" && ls | sort | tail -n1)" = "$(cd "$BACKUP_DIR" && ls *-r7.sql.gz)" ]'
 
 # --------------------------------------------------------------- 8. secrets
 echo
 echo "8. No secrets left or logged"
-check "the password is in no log or output" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT"'
+check "the password is in no log or output, the web server's log included" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT" "$WORK/server.log"'
 check "no temporary option, health or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 -name '\''.db-options.*'\'' -o -maxdepth 2 -name '\''.health.*'\'' -o -maxdepth 2 -name '\''.incoming-*'\'')" ]'
 check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 15 ]'
 

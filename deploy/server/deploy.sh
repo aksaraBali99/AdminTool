@@ -5,16 +5,24 @@
 #   deploy.sh <site> <release-id> < release.tar.gz
 #
 # Normally started by gate.sh (the GitHub key's forced command), never by
-# hand. Installed as ~/sites/bin/deploy.sh. See deploy/server/README.md for
-# the layout and the one-time setup.
+# hand. Installed as ~/apps/<app>/bin/deploy.sh. See deploy/server/README.md
+# for the layout and the one-time setup.
 #
-# Steps (each logged with a UTC time to ~/sites/<site>/logs/deploy.log):
+# Where things are (<app> is the folder above this script's bin/, so
+# nothing here names a particular app):
+#   ~/apps/<app>/bin/sites/<site>.conf    domain=<the site's domain>
+#   ~/apps/<app>/backups/<site>/          database backups
+#   ~/domains/<domain>/deploy/            releases/, shared/, logs/, current
+#   ~/domains/<domain>/public_html     -> ~/domains/<domain>/deploy/current
+#
+# Steps (each logged with a UTC time to ~/domains/<domain>/deploy/logs/deploy.log):
 #   a. unpack into releases/<id>/, link in shared/.htaccess and shared/uploads
-#   b. maintenance on (the MAINTENANCE_FILE from shared/.htaccess); on the
-#      very first deploy, public_html (a real folder) is moved to
-#      ~/sites/<site>/public_html.pre-deploy and replaced by a link to
-#      ~/sites/<site>/current
-#   c. database backup to ~/backups/<site>/pre-deploy-<UTC time>-<id>.sql.gz
+#      (relative links, so the deploy folder can be moved as a whole)
+#   b. maintenance on (the MAINTENANCE_FILE from shared/.htaccess, which must
+#      be in shared/); on the very first deploy, public_html (a real folder)
+#      is moved to deploy/public_html.pre-deploy and replaced by a link to
+#      deploy/current
+#   c. database backup to ~/apps/<app>/backups/<site>/pre-deploy-<UTC time>-<id>.sql.gz
 #   d. php index.php migrate in the new release
 #   e. "current" -> releases/<id>, switched atomically
 #   f. Health must answer "status":"ok", the release's VERSION and its
@@ -44,26 +52,28 @@ fi
 
 # DEPLOY_* overrides exist for tests/deploy/; gate.sh clears the environment,
 # so they can't be set over SSH.
+# ROOT is the hosting account's home: it holds domains/ and .lsphp_restart.txt.
 ROOT="${DEPLOY_ROOT:-$HOME}"
+# This app's folder: the parent of the bin/ folder this script is in.
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+APP_DIR="$(dirname "$BIN_DIR")"
 PHP="${DEPLOY_PHP:-php}"
-# About 3 minutes: PHP workers may keep resolving the old release for up to
-# realpath_cache_ttl (120 s by default) after "current" moves.
+# About 3 minutes: after "current" moves, PHP workers may keep running the
+# old release for a while: the realpath cache can resolve the old folder for
+# up to realpath_cache_ttl (120 s by default), and opcache can reuse the old
+# compiled files until it next checks them (opcache.revalidate_freq).
 HEALTH_TRIES="${DEPLOY_HEALTH_TRIES:-18}"
 HEALTH_WAIT="${DEPLOY_HEALTH_WAIT:-10}"
 SETTLE_SECONDS="${DEPLOY_SETTLE_SECONDS:-3}"
 KEEP_RELEASES=3
 KEEP_BACKUPS=5
 
-SITE_DIR="$ROOT/sites/$SITE"
-RELEASES="$SITE_DIR/releases"
-SHARED="$SITE_DIR/shared"
-LOGS="$SITE_DIR/logs"
-CURRENT="$SITE_DIR/current"
-PRE_DEPLOY="$SITE_DIR/public_html.pre-deploy"
-BACKUPS="$ROOT/backups/$SITE"
-REL="$RELEASES/$RELEASE"
-LOG="$LOGS/deploy.log"
-HISTORY="$LOGS/history.log"
+SITE_CONF="$BIN_DIR/sites/$SITE.conf"
+BACKUPS="$APP_DIR/backups/$SITE"
+# The rest depends on the site's domain (from SITE_CONF) and is set in the
+# preflight.
+SITE_DIR="" RELEASES="" SHARED="" LOGS="" CURRENT="" PRE_DEPLOY=""
+REL="" LOG="" HISTORY=""
 
 # Keep going (and roll back if needed) even if the SSH connection drops:
 # output to a closed connection must not kill the script mid-migration.
@@ -120,9 +130,9 @@ htaccess_get() {
     ' "$SHARED/.htaccess"
 }
 
-# Value of "<key>=<value>" in site.conf; empty when missing.
+# Value of "<key>=<value>" in the site's config; empty when missing.
 conf_get() {
-    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\\(.*[^[:space:]]\\)[[:space:]]*\$/\\1/p" "$SITE_DIR/site.conf" | tail -n1
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\\(.*[^[:space:]]\\)[[:space:]]*\$/\\1/p" "$SITE_CONF" | tail -n1
 }
 
 opt_escape() {
@@ -184,7 +194,7 @@ restore_database() {
 rollback() {
     local db_ok=1
 
-    rm -f "$CURRENT.deploy-new"
+    if [ -n "$CURRENT" ]; then rm -f "$CURRENT.deploy-new"; fi
     if [ -n "$PUBLIC_HTML" ]; then rm -f "$PUBLIC_HTML.deploy-new"; fi
 
     if [ -n "$BACKUP" ]; then rm -f "$BACKUP.partial"; fi
@@ -223,9 +233,13 @@ rollback() {
         if [ "$MAINT_ON" = 1 ]; then
             rm -f "$MAINT" && say "Maintenance off"
         fi
-        RESULT=rolled-back
-        [ "$MAINT_ON" = 1 ] || RESULT=failed
-        say "Rolled back: the previous release is live and the database is as before"
+        if [ "$MAINT_ON" = 1 ]; then
+            RESULT=rolled-back
+            say "Rolled back: the previous release is live and the database is as before"
+        else
+            RESULT=failed
+            say "Nothing was changed: the live release and the database are as before"
+        fi
     else
         RESULT=rollback-incomplete
         say "ROLLBACK INCOMPLETE: maintenance is left ON on purpose."
@@ -263,6 +277,22 @@ trap on_exit EXIT
 trap 'exit 143' TERM INT
 
 # ---------------------------------------------------------------- preflight
+[ -f "$SITE_CONF" ] || die "Missing $SITE_CONF (see deploy/server/README.md)"
+DOMAIN="$(conf_get domain)"
+[[ "$DOMAIN" =~ ^[a-z0-9][a-z0-9.-]*$ && "$DOMAIN" != *..* ]] || die "$SITE_CONF has no valid domain="
+HEALTH_URL="$(conf_get health_url)"
+HEALTH_URL="${HEALTH_URL:-https://$DOMAIN/index.php/Health}"
+PUBLIC_HTML="$ROOT/domains/$DOMAIN/public_html"
+SITE_DIR="$ROOT/domains/$DOMAIN/deploy"
+RELEASES="$SITE_DIR/releases"
+SHARED="$SITE_DIR/shared"
+LOGS="$SITE_DIR/logs"
+CURRENT="$SITE_DIR/current"
+PRE_DEPLOY="$SITE_DIR/public_html.pre-deploy"
+REL="$RELEASES/$RELEASE"
+LOG="$LOGS/deploy.log"
+HISTORY="$LOGS/history.log"
+
 for d in "$SITE_DIR" "$RELEASES" "$SHARED" "$LOGS" "$BACKUPS"; do
     [ -d "$d" ] || die "Missing folder $d (see deploy/server/README.md)"
 done
@@ -271,13 +301,6 @@ exec 9> "$SITE_DIR/.deploy.lock"
 flock -n 9 || die "Another deploy of $SITE is running"
 
 say "=== Deploy of release $RELEASE started"
-
-[ -f "$SITE_DIR/site.conf" ] || die "Missing $SITE_DIR/site.conf"
-DOMAIN="$(conf_get domain)"
-[[ "$DOMAIN" =~ ^[a-z0-9.-]+$ ]] || die "site.conf has no valid domain="
-HEALTH_URL="$(conf_get health_url)"
-HEALTH_URL="${HEALTH_URL:-https://$DOMAIN/index.php/Health}"
-PUBLIC_HTML="$ROOT/domains/$DOMAIN/public_html"
 
 for c in "$PHP" mysqldump mysql gzip curl tar flock; do
     command -v "$c" > /dev/null || die "Command not found: $c"
@@ -289,6 +312,9 @@ done
 MAINT="$(htaccess_get MAINTENANCE_FILE)"
 [[ "$MAINT" == /* ]] || die "shared/.htaccess has no absolute SetEnv MAINTENANCE_FILE"
 [ -d "$(dirname "$MAINT")" ] || die "The folder of MAINTENANCE_FILE doesn't exist"
+# Catches a MAINTENANCE_FILE left pointing at an old layout.
+[ "$(cd "$(dirname "$MAINT")" && pwd -P)" = "$(cd "$SHARED" && pwd -P)" ] \
+    || die "MAINTENANCE_FILE must be in $SHARED"
 [ ! -e "$MAINT" ] || die "Maintenance is already on ($MAINT exists); refusing to deploy over it"
 
 DB_HOST="$(htaccess_get DB_HOST)"
@@ -307,6 +333,12 @@ if [ -L "$PUBLIC_HTML" ]; then
     PREV="$(readlink "$CURRENT")"
     [ -d "$SITE_DIR/$PREV" ] || die "current points to a missing release ($PREV)"
     say "Live release: ${PREV#releases/}"
+    # The live release is also what a rollback goes back to, so it must use
+    # this site's shared files, not e.g. those of a folder it was copied from.
+    for f in .htaccess uploads; do
+        [ "$(readlink -f "$SITE_DIR/$PREV/$f")" = "$(readlink -f "$SHARED/$f")" ] \
+            || die "The live release's $f doesn't lead to $SHARED/$f; fix its link first (see deploy/server/README.md)"
+    done
     if [ "$PREV" = "releases/$RELEASE" ]; then
         # Re-run of a deploy that already succeeded: nothing to do.
         cat > /dev/null
@@ -343,8 +375,8 @@ mv -T "$INCOMING" "$REL"
 INCOMING=""
 UNPACKED=1
 touch "$REL"
-ln -s "$SHARED/.htaccess" "$REL/.htaccess"
-ln -s "$SHARED/uploads" "$REL/uploads"
+ln -s ../../shared/.htaccess "$REL/.htaccess"
+ln -s ../../shared/uploads "$REL/uploads"
 VERSION="$(tr -d '[:space:]' < "$REL/VERSION")"
 SHA="$(tr -d '[:space:]' < "$REL/REVISION")"
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { SHA="-"; die "REVISION is not a full commit sha"; }
