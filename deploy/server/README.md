@@ -401,7 +401,8 @@ without changes, and two manual runs queue instead of overlapping.
   real `''` option (index 4). The page looks the same and `WHERE tipe = ''`
   matches both, but `tipe+0`, sorting and grouping by `tipe`, and
   `CHECKSUM TABLE` change. Compare row data, not checksums, around a
-  restore of `tagihan`. Tracked separately.
+  restore of `tagihan`. Not fixed yet: parked until the deploy work
+  (EHU-0023) is done, then to get its own Solava task.
 
 ## Tests
 
