@@ -40,6 +40,7 @@ Two kinds of folders:
         logs/deploy.log               every step of every deploy, with UTC times
         logs/history.log              one line per deploy
         public_html.pre-deploy/       the old public_html folder, kept after the first deploy
+                                      until the drills pass, then deleted (DEV: 19 Nov 2026)
     DO_NOT_UPLOAD_HERE, .builds/      Hostinger's own; leave them alone
 ```
 
@@ -76,7 +77,8 @@ of one site never overlap. Then:
    `uploads/`.
 3. **Turns maintenance on**: creates the `MAINTENANCE_FILE`. On the very
    first deploy it also replaces the `public_html` folder with a link to
-   `deploy/current`, keeping the folder as `deploy/public_html.pre-deploy`.
+   `deploy/current`, keeping the folder as `deploy/public_html.pre-deploy`
+   (deleted by hand once the drills pass; see "Drills").
 4. **Backs up** the database (`mysqldump --single-transaction --routines
    --triggers`, gzipped) into `~/apps/<app>/backups/<site>/`. The backup
    must pass `gzip -t`, be at least 1 KB and end with mysqldump's "Dump
@@ -249,38 +251,121 @@ Over SSH, with `S=~/domains/<domain>/deploy`:
 4. Check `https://<domain>/index.php/Health` says `"status":"ok"`.
 5. Turn maintenance off: `rm $S/shared/maintenance.on`.
 
+## Updating the server scripts
+
+A deploy never updates `deploy.sh` or `gate.sh` themselves: it only ships the
+app. After any merge that changes `deploy/server/deploy.sh` or
+`deploy/server/gate.sh`, install them by hand into `~/apps/<app>/bin/`
+(example for `deploy.sh`; `gate.sh` the same way):
+
+1. On your machine, on an up-to-date `main`: note the file's sha256
+   (`sha256sum deploy/server/deploy.sh`) and check it has no CR line endings
+   (`tr -cd '\r' < deploy/server/deploy.sh | wc -c` must print `0`).
+2. On the server, make sure no deploy is running and maintenance is off:
+   `flock -n ~/domains/<domain>/deploy/.deploy.lock true` must succeed for
+   every site of the app, and no `deploy/shared/maintenance.on` exists.
+3. Back up the installed file: `cp -p deploy.sh deploy.sh.bak-<date>` (in
+   `~/apps/<app>/bin/`, then `chmod 600` it so it can't be run).
+4. Upload to a temporary name (`.deploy.sh.new`) and check before replacing
+   anything: its sha256 equals the one from step 1, it has no CR characters,
+   and `bash -n .deploy.sh.new` passes.
+5. `chmod 700 .deploy.sh.new && mv -f .deploy.sh.new deploy.sh`, then check
+   the installed sha256 once more.
+6. Delete the backup once the next deploy has worked.
+
+`gate.sh` is what the GitHub key runs, so a change to it takes effect on the
+next SSH connection. After replacing it, re-run the refusal tests (no
+command, `bash`, `deploy dev ../x`, `deploy prod x`) with the deploy key and
+check they appear in `bin/gate.log`.
+
+To see whether the installed scripts are current, compare their sha256 with
+the files on `main`.
+
 ## Going back to Hostinger's Git deploy
+
+The old `public_html` folder (`deploy/public_html.pre-deploy`) is deleted
+once the drills pass, so going back means turning the live release into a
+plain folder and letting Hostinger's Git deploy take over again. Example
+for DEV:
 
 ```sh
 cd ~/domains/admin-dev.englishhubbali.com
-rm public_html && mv deploy/public_html.pre-deploy public_html
+# A self-contained copy of the live release: -L turns the .htaccess and
+# uploads links into real files.
+cp -aL deploy/current public_html.git
+# Without REVISION, Health shows "revision":"unknown" instead of a commit
+# that Hostinger's deploys would no longer match.
+rm public_html.git/REVISION
+# MAINTENANCE_FILE points into deploy/, which is going away.
+sed -i '/SetEnv[[:space:]]\+MAINTENANCE_FILE/d' public_html.git/.htaccess
+# The site is unavailable for the moment between these two commands.
+rm public_html && mv public_html.git public_html
 ```
 
-`public_html.pre-deploy` is the folder as it was before the first SSH
-deploy, so uploads made since then are only in `deploy/shared/uploads/`.
-Copy them back first if they are needed:
-`rsync -a deploy/shared/uploads/ public_html/uploads/`.
+Then:
 
-Then turn Hostinger's auto-deploy back on and remove the key's line from
-`~/.ssh/authorized_keys`. `deploy/` and `~/apps/admintool/backups/dev/` can
-be deleted once nothing in them is needed.
+1. Check `https://<domain>/index.php/Health` says `"status":"ok"` and the
+   login page loads.
+2. In hPanel, connect the site's Git deployment again (repository, branch
+   `main`, into `public_html`), deploy once and turn auto-deploy back on.
+   Check Health again afterwards.
+3. Remove the deploy key's line from `~/.ssh/authorized_keys` and the site
+   from `~/apps/<app>/bin/sites.allow` and `bin/sites/<site>.conf`.
+4. Delete `deploy/` and `~/apps/<app>/backups/<site>/` once nothing in them
+   is needed. Uploads made since the switch are in the copied `uploads/`.
 
-## Failure drills (DEV)
+## Drills
 
-Run each from Actions > Deploy > Run workflow with a throwaway branch as
-`ref`, then delete the branch. Each must end with a red run and result
-`rolled-back` in the summary, the previous release live
-(`readlink ~/domains/admin-dev.englishhubbali.com/deploy/current`), Health
-`"status":"ok"` and maintenance off.
+Before a site relies on this deploy, run these drills on it from
+Actions > Deploy > Run workflow, each with a throwaway branch as `ref`
+(never merged, deleted afterwards). Take a baseline of the database just
+before each run (the list of tables, the migration version, a checksum of
+every table) and compare it afterwards.
 
-| Drill | Throwaway branch | Also expect |
+| Drill | Throwaway branch | Must end with |
 | --- | --- | --- |
-| Broken migration | adds a migration that changes data, then runs invalid SQL | the database as before the deploy (data and migration version) |
-| Failed health check | changes `Health.php` so `revision` is wrong, e.g. `'revision' => str_repeat('0', 40),` | deploy.log shows Health answered with the wrong revision |
+| C1 normal deploy | an empty commit (same code, new commit sha) | green, `success`; Health shows the new commit; the previous release kept |
+| C2 broken migration | a migration (timestamp newer than the latest) that adds a table, changes one row of an unused table, then runs invalid SQL | red, `rolled-back`; "Dropping table … (not in the backup)" in `deploy.log`; the same tables, migration version, row and checksums as the baseline |
+| C3 failed health check | `Health.php` reports a wrong revision: `'revision' => str_repeat('0', 40),` | red, `rolled-back` after the Health tries (about 3 minutes of maintenance page); `deploy.log` shows each try with the wrong revision; the database as the baseline |
 
 A branch that only writes a different `REVISION` file doesn't make the
 health check fail: Health reads that same file from the release it serves,
 so the two always agree. Use a broken Health instead, as above.
+
+If people use the site during the drills, a checksum can differ because of
+their changes; compare with the backup the drill's deploy took instead. See
+also "Known issues" for `tagihan`.
+
+**Every PROD site must pass C1, C2 and C3 before it switches from
+Hostinger's Git deploy to this one.**
+
+### Record: DEV, 19 Nov 2026
+
+All on `admin-dev.englishhubbali.com`, in the layout described above.
+
+| Drill | Release | Result |
+| --- | --- | --- |
+| C1 normal deploy | `7ee63bb490ea` | ✅ `success`. Health ok on the first try, about 4 s of maintenance |
+| C2 broken migration, 1st run | `3803aed2fc23` | ❌ `rolled-back` and the changed row restored, but **the added table was not dropped**, while the log said "Database restored". Cause: the restore used bash process substitution (`<(...)`), which needs `/dev/fd`; the server has none, so the list of tables to drop came back empty. CI has `/dev/fd`, so the tests passed. The table was dropped by hand. |
+| | | Fixed in PR #26: temporary files instead of process substitution, a restore that can't list or drop tables fails (`rollback-incomplete`, maintenance on), database names masked in the logs, and a test that the server scripts use no process substitution. |
+| C2 re-run, fixed `deploy.sh` | `c619a13d68f3` | ✅ `rolled-back`, "Dropping table drill_c2_tmp (not in the backup)", database identical to the baseline (34 tables, all checksums) |
+| C3 failed health check | `445aff03f898` | ✅ `rolled-back` after 18 tries with the wrong revision, about 3 minutes of maintenance; database identical to the baseline except the `tagihan` effect in "Known issues" |
+
+Also seen during the drills: re-running the live release ends `already-live`
+without changes, and two manual runs queue instead of overlapping.
+
+## Known issues
+
+- **Restoring a backup changes how some `tagihan.tipe` values are stored.**
+  `tagihan.tipe` is `enum('Biaya Kelas','Biaya Registrasi','Biaya Buku','')`.
+  For invoices with mixed item types the app writes a combined value (e.g.
+  "Biaya Kelas, Biaya Buku"), which isn't one of the options; the database
+  runs without strict SQL mode, so it stores MySQL's error value (index 0,
+  shown as `''`). A dump writes it as `''`, so after a restore it is the
+  real `''` option (index 4). The page looks the same and `WHERE tipe = ''`
+  matches both, but `tipe+0`, sorting and grouping by `tipe`, and
+  `CHECKSUM TABLE` change. Compare row data, not checksums, around a
+  restore of `tagihan`. Tracked separately.
 
 ## Tests
 
