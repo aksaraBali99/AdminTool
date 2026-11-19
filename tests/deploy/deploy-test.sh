@@ -211,6 +211,38 @@ sed -i "s/'revision' => \$this->app_revision(),/'revision' => str_repeat('0', 40
 grep -q "str_repeat('0', 40)" "$WORK/variant-wrong-revision/application/controllers/Health.php"
 tar -czf "$WORK/wrong-revision.tar.gz" -C "$WORK/variant-wrong-revision" .
 
+# A broken migration that does NOT check its query results (like most real
+# migrations), followed by a valid one that must then never run. With
+# CI_ENV=production, config/database.php turns db_debug off; migrate must
+# still stop at the failed query.
+cat > "$WORK/29991231000003_prod_broken.php" <<'EOF'
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_Prod_broken extends CI_Migration
+{
+    public function up()
+    {
+        $this->db->query("CREATE TABLE deploy_prod_tmp (id int)");
+        $this->db->query("SELECT * FROM no_such_table");
+    }
+    public function down() {}
+}
+EOF
+cat > "$WORK/29991231000004_after_broken.php" <<'EOF'
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_After_broken extends CI_Migration
+{
+    public function up()
+    {
+        $this->db->query("CREATE TABLE deploy_after_tmp (id int)");
+    }
+    public function down() {}
+}
+EOF
+variant prod-migrate 29991231000003_prod_broken.php 29991231000004_after_broken.php
+variant prod-broken 29991231000000_deploy_probe.php 29991231000003_prod_broken.php 29991231000004_after_broken.php
+
 ALL_OUTPUT="$WORK/all-output.txt"
 deploy() { # <release-id> <tarball> -> $rc, $out
     LAST_DEPLOY="$1" SHOWN=0
@@ -228,6 +260,23 @@ health() { curl -s "$SITE_URL/index.php/Health"; }
 health_ok() { health | grep -q '"status":"ok"'; }
 table_exists() { [ -n "$(sql "SHOW TABLES LIKE '$1'")" ]; }
 backup_count() { find "$BACKUP_DIR" -name 'pre-deploy-*.sql.gz' | wc -l; }
+
+# --------------------------------------------------------------- 0. migrate in production
+echo
+echo "0. Migrate stops at a database error in production too (db_debug off)"
+check "the production config has db_debug off (so this test means something)" \
+    '[ "$(cd "$REPO" && "$PHP_BIN" -r '\''define("BASEPATH", 1); define("ENVIRONMENT", "production"); include "application/config/database.php"; var_export($db["default"]["db_debug"]);'\'')" = false ]'
+set +e
+prod_out="$(cd "$WORK/variant-prod-migrate" && DB_HOST="$TEST_DB_HOST" DB_PORT="$TEST_DB_PORT" DB_USER="$DB_USER" \
+    DB_PASS="$DB_PASS" DB_NAME="$DB" CI_ENV=production "$PHP_BIN" index.php migrate 2>&1)"
+prod_rc=$?
+set -e
+check "migrate exits non-zero (got $prod_rc)" '[ "$prod_rc" -ne 0 ]'
+check "...because of the failed query" 'grep -q "no_such_table" <<< "$prod_out"'
+check "the migration version is not bumped" '[ "$(sql '\''SELECT version FROM migrations'\'')" = "$BASE_VERSION" ]'
+check "the migration after the broken one did not run" '! table_exists deploy_after_tmp'
+check "(the broken one ran up to its bad query)" 'table_exists deploy_prod_tmp'
+prep "drop the table the broken migration left" sql "DROP TABLE IF EXISTS deploy_prod_tmp"
 
 # --------------------------------------------------------------- 1. first deploy fails
 echo
@@ -293,6 +342,25 @@ check "the migration version is back to r2's" '[ "$(sql '\''SELECT version FROM 
 check "maintenance is off" '[ ! -e "$MAINT" ]'
 check "Health is ok" 'health_ok'
 check "history.log has a rolled-back line" 'grep -q '\'' release=r3 .* result=rolled-back$'\'' "$SITE_DIR/logs/history.log"'
+check "the database name and user in the migration error are masked in the log" 'grep -q "<db>\.no_such_table" "$SITE_DIR/logs/deploy.log"'
+
+# --------------------------------------------------------------- 4b. broken migration, production
+echo
+echo "4b. Deploy with a broken migration and CI_ENV=production (db_debug off)"
+cp "$SITE_DIR/shared/.htaccess" "$WORK/htaccess.testing"
+sed -i 's/SetEnv CI_ENV testing/SetEnv CI_ENV production/' "$SITE_DIR/shared/.htaccess"
+prep "the shared .htaccess says CI_ENV production" grep -q "SetEnv CI_ENV production" "$SITE_DIR/shared/.htaccess"
+deploy r3p "$WORK/prod-broken.tar.gz"
+cp "$WORK/htaccess.testing" "$SITE_DIR/shared/.htaccess"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rolled-back" 'result_is r3p rolled-back'
+check "says the migration failed" 'grep -q '\''ERROR: Migrations failed'\'' <<< "$out"'
+check "drops the table the broken migration added" 'grep -q "Dropping table deploy_prod_tmp (not in the backup)" <<< "$out" && ! table_exists deploy_prod_tmp'
+check "the migration after the broken one did not run" '! table_exists deploy_after_tmp'
+check "the migration version is back to r2'\''s" '[ "$(sql '\''SELECT version FROM migrations'\'')" = 29991231000000 ]'
+check "current points back to releases/r2" '[ "$(live_release)" = releases/r2 ]'
+check "maintenance is off" '[ ! -e "$MAINT" ]'
+check "Health is ok" 'health_ok'
 
 # --------------------------------------------------------------- 5. failed health check
 echo
@@ -415,7 +483,13 @@ check "the newest backup is r7's" '[ "$(cd "$BACKUP_DIR" && ls | sort | tail -n1
 echo
 echo "8. No secrets left or logged"
 check "the password is in no log or output, the web server's log included" '! grep -rqF "$DB_PASS" "$SITE_DIR/logs" "$ALL_OUTPUT" "$WORK/server.log"'
-check "no temporary option, health or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 -name '\''.db-options.*'\'' -o -maxdepth 2 -name '\''.health.*'\'' -o -maxdepth 2 -name '\''.incoming-*'\'')" ]'
+check "no temporary option, health, error-output, restore or incoming files left" '[ -z "$(find "$SITE_DIR" -maxdepth 2 \( -name '\''.db-options.*'\'' -o -name '\''.health.*'\'' -o -name '\''.stderr.*'\'' -o -name '\''.restore.*'\'' -o -name '\''.incoming-*'\'' \))" ]'
+check "the database name and user are in no log or output (masked)" '! grep -rqF -e "$DB" -e "$DB_USER" "$SITE_DIR/logs" "$ALL_OUTPUT"'
+# The server has no /dev/fd, so process substitution fails there (it made the
+# restore skip dropping new tables, found in DEV drill C2). CI has /dev/fd,
+# so only this check can catch it.
+check "the server scripts use no process substitution (no /dev/fd on the server)" \
+    '! grep -nE "<\(|>\(" "$REPO/deploy/server/deploy.sh" "$REPO/deploy/server/gate.sh"'
 check "every deploy wrote one history line" '[ "$(wc -l < "$SITE_DIR/logs/history.log")" -ge 15 ]'
 
 echo

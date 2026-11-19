@@ -106,14 +106,26 @@ If any step after 3 fails, it **rolls back**:
 - it exits non-zero, so the Actions run goes red.
 
 If it can't restore the database, it **leaves maintenance on** so nobody
-works on a half-restored database. The run then reports
+works on a half-restored database. That includes not being able to list or
+drop the tables the failed migration added. The run then reports
 `rollback-incomplete` (see below).
 
 Database settings come from the `SetEnv` lines in `shared/.htaccess`, so
 there is a single source of truth. They are never printed or logged, and
 never put on a command line. `mysqldump` and `mysql` read them from a
 temporary option file (mode 600, deleted on exit). `php` gets them as
-environment variables of that one process.
+environment variables of that one process. Database errors can name the
+database or its user, so before anything is logged the deploy replaces the
+database name, user and password with `<db>`, `<db-user>` and
+`<db-password>` (the log also ends up in the Actions log).
+
+Migrations stop at the first failed query in every environment, production
+included: the `Migrate` controller turns `db_debug` on for its run, so a
+failed query ends `php index.php migrate` with a non-zero exit before the
+migration is recorded as applied.
+
+The server has no `/dev/fd`, so the scripts must not use bash process
+substitution (`<(...)`); `tests/deploy/deploy-test.sh` checks this.
 
 If the SSH connection drops mid-deploy, the deploy still finishes (or rolls
 back) on the server. Its log is in `deploy.log`.

@@ -95,6 +95,8 @@ BACKUP=""
 OPT=""
 INCOMING=""
 TMP_BODY=""
+ERRF=""
+RESTORE_WORK=""
 SHA="-"
 VERSION="-"
 DB_HOST="" DB_PORT="" DB_USER="" DB_PASS="" DB_NAME="" CI_ENV_VALUE=""
@@ -102,9 +104,23 @@ DOMAIN="" PUBLIC_HTML="" HEALTH_URL="" verdict=""
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# Replaces the database password, name and user with placeholders: database
+# errors (from migrate, mysqldump or mysql) can name them, and the log also
+# ends up in the GitHub Actions log. The longer of name and user goes first,
+# in case one contains the other. Values under 4 characters are left alone
+# rather than blanking unrelated text.
+mask() {
+    local s="$1" a="$DB_NAME" ra="<db>" b="$DB_USER" rb="<db-user>"
+    if [ "${#b}" -gt "${#a}" ]; then a="$DB_USER" ra="<db-user>" b="$DB_NAME" rb="<db>"; fi
+    if [ "${#DB_PASS}" -ge 4 ]; then s="${s//"$DB_PASS"/<db-password>}"; fi
+    if [ "${#a}" -ge 4 ]; then s="${s//"$a"/$ra}"; fi
+    if [ "${#b}" -ge 4 ]; then s="${s//"$b"/$rb}"; fi
+    printf '%s' "$s"
+}
+
 say() {
     local line
-    line="$(now) [$SITE $RELEASE] $*"
+    line="$(now) [$SITE $RELEASE] $(mask "$*")"
     { [ -d "$LOGS" ] && printf '%s\n' "$line" >> "$LOG"; } 2>/dev/null || true
     printf '%s\n' "$line" 2>/dev/null || true
 }
@@ -133,6 +149,20 @@ htaccess_get() {
 # Value of "<key>=<value>" in the site's config; empty when missing.
 conf_get() {
     sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\\(.*[^[:space:]]\\)[[:space:]]*\$/\\1/p" "$SITE_CONF" | tail -n1
+}
+
+# A fresh, empty file for a command's error output, which is then logged
+# (masked) instead of going straight to the SSH output unmasked.
+new_errfile() {
+    if [ -z "$ERRF" ]; then ERRF="$(mktemp "$SITE_DIR/.stderr.XXXXXX")" || { ERRF=""; return 1; }; fi
+    : > "$ERRF"
+}
+log_errfile() { # <command name>
+    local l
+    if [ -n "$ERRF" ] && [ -s "$ERRF" ]; then
+        while IFS= read -r l; do say "   $1: $l"; done < "$ERRF"
+        : > "$ERRF"
+    fi
 }
 
 opt_escape() {
@@ -175,19 +205,36 @@ restore_database() {
 
     # Tables the failed deploy added aren't in the backup; drop them so the
     # database is exactly as before and the migration can run again later.
-    local in_backup current t
-    in_backup="$(gzip -dc "$BACKUP" | sed -n 's/^CREATE TABLE `\([^`]*\)`.*/\1/p' | sort -u)" || return 1
-    current="$(mysql --defaults-extra-file="$OPT" -N -B -e "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'" "$DB_NAME" | cut -f1 | sort -u)" || return 1
-    for t in $(comm -13 <(printf '%s\n' "$in_backup") <(printf '%s\n' "$current")); do
-        if [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
-            say "Dropping table $t (not in the backup)"
-            mysql --defaults-extra-file="$OPT" -e "SET FOREIGN_KEY_CHECKS=0; DROP TABLE \`$t\`" "$DB_NAME" || return 1
-        else
-            say "Not dropping table with an unusual name; check it by hand"
+    # Temporary files, not process substitution: the server has no /dev/fd.
+    # Any failure here fails the restore (maintenance stays on), never a
+    # silent "restored".
+    local t
+    RESTORE_WORK="$(mktemp -d "$SITE_DIR/.restore.XXXXXX")" || { say "Could not create a work folder for the restore"; return 1; }
+    new_errfile || { say "Could not create a file for error output"; return 1; }
+    if ! gzip -dc "$BACKUP" | sed -n 's/^CREATE TABLE `\([^`]*\)`.*/\1/p' | LC_ALL=C sort -u > "$RESTORE_WORK/in-backup" \
+        || ! [ -s "$RESTORE_WORK/in-backup" ]; then
+        say "Could not list the tables in the backup"; return 1
+    fi
+    if ! mysql --defaults-extra-file="$OPT" -N -B -e "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'" "$DB_NAME" 2> "$ERRF" \
+        | cut -f1 | LC_ALL=C sort -u > "$RESTORE_WORK/current"; then
+        log_errfile mysql; say "Could not list the tables in the database"; return 1
+    fi
+    if ! LC_ALL=C comm -13 "$RESTORE_WORK/in-backup" "$RESTORE_WORK/current" > "$RESTORE_WORK/extra"; then
+        say "Could not compare the table lists"; return 1
+    fi
+    while IFS= read -r t; do
+        if ! [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
+            say "A table with an unusual name isn't in the backup; drop it by hand"; return 1
         fi
-    done
+        say "Dropping table $t (not in the backup)"
+        if ! mysql --defaults-extra-file="$OPT" -e "SET FOREIGN_KEY_CHECKS=0; DROP TABLE \`$t\`" "$DB_NAME" 2> "$ERRF"; then
+            log_errfile mysql; say "Could not drop table $t"; return 1
+        fi
+    done < "$RESTORE_WORK/extra"
 
-    gzip -dc "$BACKUP" | mysql --defaults-extra-file="$OPT" "$DB_NAME" || return 1
+    if ! gzip -dc "$BACKUP" | mysql --defaults-extra-file="$OPT" "$DB_NAME" 2> "$ERRF"; then
+        log_errfile mysql; say "Loading the backup failed"; return 1
+    fi
     say "Database restored"
 }
 
@@ -259,6 +306,8 @@ on_exit() {
     fi
     [ -n "$OPT" ] && rm -f "$OPT"
     [ -n "$TMP_BODY" ] && rm -f "$TMP_BODY"
+    [ -n "$ERRF" ] && rm -f "$ERRF"
+    [ -n "$RESTORE_WORK" ] && rm -rf "$RESTORE_WORK"
     [ -n "$INCOMING" ] && rm -rf "$INCOMING"
     if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then backup_name="$(basename "$BACKUP")"; fi
     if [ -d "$LOGS" ]; then
@@ -403,12 +452,16 @@ sleep "$SETTLE_SECONDS"
 # ---------------------------------------------------------------- c. backup
 STEP=backup
 write_option_file
+new_errfile
 BACKUP="$BACKUPS/pre-deploy-$(date -u +%Y%m%dT%H%M%SZ)-$RELEASE.sql.gz"
+dump_rc=0
 (
     umask 077
     mysqldump --defaults-extra-file="$OPT" --single-transaction --routines --triggers \
-        --no-tablespaces "$DB_NAME" | gzip -c > "$BACKUP.partial"
-)
+        --no-tablespaces "$DB_NAME" 2> "$ERRF" | gzip -c > "$BACKUP.partial"
+) || dump_rc=$?
+log_errfile mysqldump
+[ "$dump_rc" -eq 0 ] || die "The backup failed (exit $dump_rc)"
 gzip -t "$BACKUP.partial" || die "The backup is not a valid gzip file"
 size="$(stat -c %s "$BACKUP.partial")"
 [ "$size" -ge 1024 ] || die "The backup is suspiciously small ($size bytes)"
