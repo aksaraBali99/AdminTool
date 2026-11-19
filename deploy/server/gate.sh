@@ -7,22 +7,25 @@
 # never deploy another app.
 #
 # sshd puts what the client asked to run in $SSH_ORIGINAL_COMMAND. The only
-# accepted form is exactly
+# accepted forms are exactly
 #   deploy <site> <release-id>
+#   rollback <site> <release-id|previous> <code|code-db>
 # where <site> is a line of sites.allow (next to this script) and
 # <release-id> matches ^[0-9A-Za-z._-]{1,64}$ (and isn't "." or ".." or
-# starting with "." or "-"). The release tarball arrives on stdin and is
-# passed straight to deploy.sh. Anything else is logged to gate.log (next
-# to this script) and refused with exit 1.
+# starting with "." or "-"). For deploy, the release tarball arrives on
+# stdin and is passed straight to deploy.sh; rollback.sh reads nothing from
+# stdin. Anything else is logged to gate.log (next to this script) and
+# refused with exit 1.
 #
 # Everything is found next to this script, never from the environment, and
-# deploy.sh runs with a clean environment, so the SSH client can't steer it.
-# See deploy/server/README.md.
+# deploy.sh/rollback.sh run with a clean environment, so the SSH client can't
+# steer them. See deploy/server/README.md.
 set -uo pipefail
 
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ALLOW_FILE="$BIN_DIR/sites.allow"
 DEPLOY="$BIN_DIR/deploy.sh"
+ROLLBACK="$BIN_DIR/rollback.sh"
 GATE_LOG="$BIN_DIR/gate.log"
 
 refuse() {
@@ -39,12 +42,23 @@ refuse() {
 cmd="${SSH_ORIGINAL_COMMAND-}"
 [ -n "$cmd" ] || refuse "no command"
 
-# Exactly three fields separated by single spaces; no tabs, newlines or
-# other whitespace anywhere.
-re='^deploy ([a-z0-9][a-z0-9-]{0,31}) ([0-9A-Za-z._-]{1,64})$'
-[[ "$cmd" =~ $re ]] || refuse "bad command"
-site="${BASH_REMATCH[1]}"
-release="${BASH_REMATCH[2]}"
+# Fields separated by single spaces; no tabs, newlines or other whitespace
+# anywhere.
+deploy_re='^deploy ([a-z0-9][a-z0-9-]{0,31}) ([0-9A-Za-z._-]{1,64})$'
+rollback_re='^rollback ([a-z0-9][a-z0-9-]{0,31}) ([0-9A-Za-z._-]{1,64}) (code|code-db)$'
+if [[ "$cmd" =~ $deploy_re ]]; then
+    action=deploy
+    site="${BASH_REMATCH[1]}"
+    release="${BASH_REMATCH[2]}"
+    type=""
+elif [[ "$cmd" =~ $rollback_re ]]; then
+    action=rollback
+    site="${BASH_REMATCH[1]}"
+    release="${BASH_REMATCH[2]}"
+    type="${BASH_REMATCH[3]}"
+else
+    refuse "bad command"
+fi
 
 case "$release" in
     .*|-*) refuse "bad release id" ;;
@@ -56,8 +70,14 @@ if ! sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$ALLOW_FILE
     refuse "site not allowed"
 fi
 
-[ -x "$DEPLOY" ] || refuse "deploy.sh missing"
+if [ "$action" = deploy ]; then
+    [ -x "$DEPLOY" ] || refuse "deploy.sh missing"
+    exec env -i HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" \
+        PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
+        "$DEPLOY" "$site" "$release"
+fi
 
+[ -x "$ROLLBACK" ] || refuse "rollback.sh missing"
 exec env -i HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" \
     PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
-    "$DEPLOY" "$site" "$release"
+    "$ROLLBACK" "$site" "$release" "$type" < /dev/null

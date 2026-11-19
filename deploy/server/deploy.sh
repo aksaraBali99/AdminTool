@@ -5,8 +5,9 @@
 #   deploy.sh <site> <release-id> < release.tar.gz
 #
 # Normally started by gate.sh (the GitHub key's forced command), never by
-# hand. Installed as ~/apps/<app>/bin/deploy.sh. See deploy/server/README.md
-# for the layout and the one-time setup.
+# hand. Installed as ~/apps/<app>/bin/deploy.sh, next to deploy-lib.sh (the
+# helpers it shares with rollback.sh). See deploy/server/README.md for the
+# layout and the one-time setup.
 #
 # Where things are (<app> is the folder above this script's bin/, so
 # nothing here names a particular app):
@@ -31,9 +32,13 @@
 #      REVISION (full commit sha), i.e. the new release is what is served,
 #      and "outbound" "live" on production, "blocked" anywhere else;
 #      retried for about 3 minutes
-#   g. maintenance off; keep the newest 3 releases and 5 pre-deploy backups
+#   g. maintenance off; keep the newest 3 releases (plus the live one and the
+#      one live before it) and 5 pre-deploy backups
 #   h. on any failure after (b): restore the database if migrations started,
 #      put the previous release back, maintenance off, exit non-zero
+#
+# history.log and the RESULT line record previous=<the release that was live
+# before>, which rollback.sh uses as "the previous release".
 #
 # Deploying the release that is already live changes nothing and succeeds
 # (result "already-live"), so re-running a deploy is harmless.
@@ -71,10 +76,19 @@ SETTLE_SECONDS="${DEPLOY_SETTLE_SECONDS:-3}"
 KEEP_RELEASES=3
 KEEP_BACKUPS=5
 
+if [ ! -f "$BIN_DIR/deploy-lib.sh" ]; then
+    echo "deploy.sh: $BIN_DIR/deploy-lib.sh is missing; install it next to deploy.sh (see deploy/server/README.md)" >&2
+    echo "RESULT site=$SITE release=$RELEASE sha=- version=- backup= previous=- result=failed"
+    exit 1
+fi
+# shellcheck source=deploy-lib.sh
+. "$BIN_DIR/deploy-lib.sh"
+
+LOG_TAG="$SITE $RELEASE"
 SITE_CONF="$BIN_DIR/sites/$SITE.conf"
 BACKUPS="$APP_DIR/backups/$SITE"
-# The rest depends on the site's domain (from SITE_CONF) and is set in the
-# preflight.
+# The rest depends on the site's domain (from SITE_CONF) and is set by
+# site_paths().
 SITE_DIR="" RELEASES="" SHARED="" LOGS="" CURRENT="" PRE_DEPLOY=""
 REL="" LOG="" HISTORY=""
 
@@ -93,6 +107,7 @@ CURRENT_CREATED=0
 PUBLIC_HTML_SWAPPED=0
 SWITCHED=0
 PREV=""
+LIVE="" LIVE_LINK=""
 MIGRATION_STARTED=0
 BACKUP=""
 OPT=""
@@ -104,145 +119,7 @@ SHA="-"
 VERSION="-"
 DB_HOST="" DB_PORT="" DB_USER="" DB_PASS="" DB_NAME="" CI_ENV_VALUE=""
 SITE_CI_ENV="" EXPECTED_OUTBOUND=""
-DOMAIN="" PUBLIC_HTML="" HEALTH_URL="" verdict=""
-
-now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-
-# Replaces the database password, name and user with placeholders: database
-# errors (from migrate, mysqldump or mysql) can name them, and the log also
-# ends up in the GitHub Actions log. The longer of name and user goes first,
-# in case one contains the other. Values under 4 characters are left alone
-# rather than blanking unrelated text.
-mask() {
-    local s="$1" a="$DB_NAME" ra="<db>" b="$DB_USER" rb="<db-user>"
-    if [ "${#b}" -gt "${#a}" ]; then a="$DB_USER" ra="<db-user>" b="$DB_NAME" rb="<db>"; fi
-    if [ "${#DB_PASS}" -ge 4 ]; then s="${s//"$DB_PASS"/<db-password>}"; fi
-    if [ "${#a}" -ge 4 ]; then s="${s//"$a"/$ra}"; fi
-    if [ "${#b}" -ge 4 ]; then s="${s//"$b"/$rb}"; fi
-    printf '%s' "$s"
-}
-
-say() {
-    local line
-    line="$(now) [$SITE $RELEASE] $(mask "$*")"
-    { [ -d "$LOGS" ] && printf '%s\n' "$line" >> "$LOG"; } 2>/dev/null || true
-    printf '%s\n' "$line" 2>/dev/null || true
-}
-
-die() {
-    say "ERROR: $*"
-    exit 1
-}
-
-# Value of "SetEnv <name> <value>" in shared/.htaccess (the last one wins,
-# as in Apache); empty when missing. Surrounding double quotes are removed.
-htaccess_get() {
-    awk -v k="$1" '
-        { sub(/\r$/, "") }
-        tolower($1) == "setenv" && $2 == k {
-            v = $0
-            sub(/^[ \t]*[^ \t]+[ \t]+[^ \t]+[ \t]*/, "", v)
-            sub(/[ \t]+$/, "", v)
-            if (v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
-            found = v
-        }
-        END { printf "%s", found }
-    ' "$SHARED/.htaccess"
-}
-
-# Value of "<key>=<value>" in the site's config; empty when missing.
-conf_get() {
-    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\\(.*[^[:space:]]\\)[[:space:]]*\$/\\1/p" "$SITE_CONF" | tail -n1
-}
-
-# A fresh, empty file for a command's error output, which is then logged
-# (masked) instead of going straight to the SSH output unmasked.
-new_errfile() {
-    if [ -z "$ERRF" ]; then ERRF="$(mktemp "$SITE_DIR/.stderr.XXXXXX")" || { ERRF=""; return 1; }; fi
-    : > "$ERRF"
-}
-log_errfile() { # <command name>
-    local l
-    if [ -n "$ERRF" ] && [ -s "$ERRF" ]; then
-        while IFS= read -r l; do say "   $1: $l"; done < "$ERRF"
-        : > "$ERRF"
-    fi
-}
-
-opt_escape() {
-    local s="${1//\\/\\\\}"
-    printf '%s' "${s//\"/\\\"}"
-}
-
-write_option_file() {
-    OPT="$(mktemp "$SITE_DIR/.db-options.XXXXXX")"
-    chmod 600 "$OPT"
-    {
-        printf '[client]\n'
-        printf 'host="%s"\n' "$(opt_escape "$DB_HOST")"
-        printf 'user="%s"\n' "$(opt_escape "$DB_USER")"
-        printf 'password="%s"\n' "$(opt_escape "$DB_PASS")"
-        if [ -n "$DB_PORT" ]; then printf 'port=%s\n' "$DB_PORT"; fi
-    } > "$OPT"
-}
-
-# Asks LiteSpeed to restart this account's PHP workers, so none keeps serving
-# the old release from PHP's realpath cache after a link changed. Harmless
-# where LiteSpeed isn't used.
-restart_php() {
-    if touch "$ROOT/.lsphp_restart.txt"; then
-        say "$1 Asked LiteSpeed to restart PHP (~/.lsphp_restart.txt)"
-    else
-        say "$1 Warning: could not touch ~/.lsphp_restart.txt"
-    fi
-}
-
-# Points $1 (a link) at $2, atomically.
-relink() {
-    ln -sfn "$2" "$1.deploy-new"
-    mv -Tf "$1.deploy-new" "$1"
-}
-
-restore_database() {
-    say "Restoring the database from $(basename "$BACKUP")"
-    [ -s "$BACKUP" ] && [ -n "$OPT" ] || { say "No backup or option file to restore from"; return 1; }
-
-    # Tables the failed deploy added aren't in the backup; drop them so the
-    # database is exactly as before and the migration can run again later.
-    # Temporary files, not process substitution: the server has no /dev/fd.
-    # Any failure here fails the restore (maintenance stays on), never a
-    # silent "restored".
-    local t
-    RESTORE_WORK="$(mktemp -d "$SITE_DIR/.restore.XXXXXX")" || { say "Could not create a work folder for the restore"; return 1; }
-    new_errfile || { say "Could not create a file for error output"; return 1; }
-    if ! gzip -dc "$BACKUP" | sed -n 's/^CREATE TABLE `\([^`]*\)`.*/\1/p' | LC_ALL=C sort -u > "$RESTORE_WORK/in-backup" \
-        || ! [ -s "$RESTORE_WORK/in-backup" ]; then
-        say "Could not list the tables in the backup"; return 1
-    fi
-    if ! mysql --defaults-extra-file="$OPT" -N -B -e "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'" "$DB_NAME" 2> "$ERRF" \
-        | cut -f1 | LC_ALL=C sort -u > "$RESTORE_WORK/current"; then
-        log_errfile mysql; say "Could not list the tables in the database"; return 1
-    fi
-    if ! LC_ALL=C comm -13 "$RESTORE_WORK/in-backup" "$RESTORE_WORK/current" > "$RESTORE_WORK/extra"; then
-        say "Could not compare the table lists"; return 1
-    fi
-    while IFS= read -r t; do
-        if ! [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
-            say "A table with an unusual name isn't in the backup; drop it by hand"; return 1
-        fi
-        say "Dropping table $t (not in the backup)"
-        # stdin from /dev/null: the loop reads the table list on stdin, and
-        # mysql must not swallow the rest of it.
-        if ! mysql --defaults-extra-file="$OPT" -e "SET FOREIGN_KEY_CHECKS=0; DROP TABLE \`$t\`" "$DB_NAME" < /dev/null 2> "$ERRF"; then
-            log_errfile mysql; say "Could not drop table $t"; return 1
-        fi
-    done < "$RESTORE_WORK/extra"
-
-    if ! gzip -dc "$BACKUP" | mysql --defaults-extra-file="$OPT" "$DB_NAME" 2> "$ERRF"; then
-        log_errfile mysql; say "Loading the backup failed"; return 1
-    fi
-    say "Database restored"
-}
+DOMAIN="" PUBLIC_HTML="" HEALTH_URL=""
 
 rollback() {
     local db_ok=1
@@ -275,7 +152,7 @@ rollback() {
     fi
 
     if [ "$MIGRATION_STARTED" = 1 ]; then
-        restore_database || db_ok=0
+        restore_database "$BACKUP" || db_ok=0
     fi
 
     if [ "$UNPACKED" = 1 ] && [ "$(readlink "$CURRENT" 2>/dev/null)" != "releases/$RELEASE" ]; then
@@ -301,7 +178,7 @@ rollback() {
 }
 
 on_exit() {
-    local rc=$? backup_name=""
+    local rc=$? backup_name="" previous
     set +eu
     trap - EXIT
     # Nothing may interrupt the rollback.
@@ -316,14 +193,17 @@ on_exit() {
     [ -n "$RESTORE_WORK" ] && rm -rf "$RESTORE_WORK"
     [ -n "$INCOMING" ] && rm -rf "$INCOMING"
     if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then backup_name="$(basename "$BACKUP")"; fi
+    # The release that was live before this deploy ("-" on the first one).
+    previous="${PREV#releases/}"
+    previous="${previous:--}"
     if [ -d "$LOGS" ]; then
-        printf '%s site=%s release=%s sha=%s version=%s backup=%s result=%s\n' \
-            "$(now)" "$SITE" "$RELEASE" "$SHA" "$VERSION" "$backup_name" "$RESULT" \
+        printf '%s site=%s release=%s sha=%s version=%s backup=%s previous=%s result=%s\n' \
+            "$(now)" "$SITE" "$RELEASE" "$SHA" "$VERSION" "$backup_name" "$previous" "$RESULT" \
             >> "$HISTORY" 2>/dev/null
     fi
     # Read by the workflow for its job summary.
-    printf 'RESULT site=%s release=%s sha=%s version=%s backup=%s result=%s\n' \
-        "$SITE" "$RELEASE" "$SHA" "$VERSION" "$backup_name" "$RESULT" 2>/dev/null
+    printf 'RESULT site=%s release=%s sha=%s version=%s backup=%s previous=%s result=%s\n' \
+        "$SITE" "$RELEASE" "$SHA" "$VERSION" "$backup_name" "$previous" "$RESULT" 2>/dev/null
     if [ "$RESULT" = success ] || [ "$RESULT" = already-live ]; then exit 0; fi
     [ "$rc" -ne 0 ] || rc=1
     exit "$rc"
@@ -332,94 +212,22 @@ trap on_exit EXIT
 trap 'exit 143' TERM INT
 
 # ---------------------------------------------------------------- preflight
-[ -f "$SITE_CONF" ] || die "Missing $SITE_CONF (see deploy/server/README.md)"
-DOMAIN="$(conf_get domain)"
-[[ "$DOMAIN" =~ ^[a-z0-9][a-z0-9.-]*$ && "$DOMAIN" != *..* ]] || die "$SITE_CONF has no valid domain="
-HEALTH_URL="$(conf_get health_url)"
-HEALTH_URL="${HEALTH_URL:-https://$DOMAIN/index.php/Health}"
-PUBLIC_HTML="$ROOT/domains/$DOMAIN/public_html"
-SITE_DIR="$ROOT/domains/$DOMAIN/deploy"
-RELEASES="$SITE_DIR/releases"
-SHARED="$SITE_DIR/shared"
-LOGS="$SITE_DIR/logs"
-CURRENT="$SITE_DIR/current"
-PRE_DEPLOY="$SITE_DIR/public_html.pre-deploy"
+site_paths
 REL="$RELEASES/$RELEASE"
-LOG="$LOGS/deploy.log"
-HISTORY="$LOGS/history.log"
-
-for d in "$SITE_DIR" "$RELEASES" "$SHARED" "$LOGS" "$BACKUPS"; do
-    [ -d "$d" ] || die "Missing folder $d (see deploy/server/README.md)"
-done
-
-exec 9> "$SITE_DIR/.deploy.lock"
-flock -n 9 || die "Another deploy of $SITE is running"
+take_lock
 
 say "=== Deploy of release $RELEASE started"
 
-for c in "$PHP" mysqldump mysql gzip curl tar flock; do
-    command -v "$c" > /dev/null || die "Command not found: $c"
-done
-
-[ -f "$SHARED/.htaccess" ] || die "Missing $SHARED/.htaccess"
-[ -d "$SHARED/uploads" ] || die "Missing $SHARED/uploads"
-
-MAINT="$(htaccess_get MAINTENANCE_FILE)"
-[[ "$MAINT" == /* ]] || die "shared/.htaccess has no absolute SetEnv MAINTENANCE_FILE"
-[ -d "$(dirname "$MAINT")" ] || die "The folder of MAINTENANCE_FILE doesn't exist"
-# Catches a MAINTENANCE_FILE left pointing at an old layout.
-[ "$(cd "$(dirname "$MAINT")" && pwd -P)" = "$(cd "$SHARED" && pwd -P)" ] \
-    || die "MAINTENANCE_FILE must be in $SHARED"
-[ ! -e "$MAINT" ] || die "Maintenance is already on ($MAINT exists); refusing to deploy over it"
-
-DB_HOST="$(htaccess_get DB_HOST)"
-DB_PORT="$(htaccess_get DB_PORT)"
-DB_USER="$(htaccess_get DB_USER)"
-DB_PASS="$(htaccess_get DB_PASS)"
-DB_NAME="$(htaccess_get DB_NAME)"
-CI_ENV_VALUE="$(htaccess_get CI_ENV)"
-[ -n "$DB_HOST" ] && [ -n "$DB_USER" ] && [ -n "$DB_PASS" ] && [ -n "$DB_NAME" ] \
-    || die "shared/.htaccess must set DB_HOST, DB_USER, DB_PASS and DB_NAME"
-[ -z "$DB_PORT" ] || [[ "$DB_PORT" =~ ^[0-9]+$ ]] || die "DB_PORT must be a number"
-
-# What kind of site this is. The site config says what it must be; the
-# site's .htaccess says what the app actually runs as. They must agree, so a
-# copied or half-edited .htaccess can't turn a DEV site into one that sends
-# real WhatsApp messages, or a PROD site into one that silently doesn't.
-SITE_CI_ENV="$(conf_get ci_env)"
-case "$SITE_CI_ENV" in
-    production|testing|development) ;;
-    "") die "$SITE_CONF has no ci_env=; add ci_env=production, ci_env=testing or ci_env=development (see deploy/server/README.md)" ;;
-    *) die "$SITE_CONF has ci_env=$SITE_CI_ENV; it must be exactly production, testing or development" ;;
-esac
-if [ "$CI_ENV_VALUE" != "$SITE_CI_ENV" ]; then
-    # Only a known value is named: nothing else from .htaccess is ever logged.
-    case "$CI_ENV_VALUE" in
-        production|testing|development) shown="'$CI_ENV_VALUE'" ;;
-        "") shown="not set" ;;
-        *) shown="another value" ;;
-    esac
-    die "CI_ENV in shared/.htaccess is $shown but $SITE_CONF says ci_env=$SITE_CI_ENV; make them the same (SetEnv CI_ENV $SITE_CI_ENV in shared/.htaccess), or fix ci_env if the site config is wrong"
-fi
-if [ "$SITE_CI_ENV" = production ]; then EXPECTED_OUTBOUND=live; else EXPECTED_OUTBOUND=blocked; fi
+site_settings "$PHP" mysqldump mysql gzip curl tar flock
 
 if [ -L "$PUBLIC_HTML" ]; then
-    [ "$(readlink "$PUBLIC_HTML")" = "$CURRENT" ] || die "$PUBLIC_HTML is a link, but not to $CURRENT"
-    [ -L "$CURRENT" ] || die "$CURRENT is not a link"
-    PREV="$(readlink "$CURRENT")"
-    [ -d "$SITE_DIR/$PREV" ] || die "current points to a missing release ($PREV)"
-    say "Live release: ${PREV#releases/}"
-    # The live release is also what a rollback goes back to, so it must use
-    # this site's shared files, not e.g. those of a folder it was copied from.
-    for f in .htaccess uploads; do
-        [ "$(readlink -f "$SITE_DIR/$PREV/$f")" = "$(readlink -f "$SHARED/$f")" ] \
-            || die "The live release's $f doesn't lead to $SHARED/$f; fix its link first (see deploy/server/README.md)"
-    done
+    live_release
+    PREV="$LIVE_LINK"
     if [ "$PREV" = "releases/$RELEASE" ]; then
         # Re-run of a deploy that already succeeded: nothing to do.
         cat > /dev/null
-        if [ -f "$SITE_DIR/$PREV/REVISION" ]; then SHA="$(tr -d '[:space:]' < "$SITE_DIR/$PREV/REVISION")"; fi
-        if [ -f "$SITE_DIR/$PREV/VERSION" ]; then VERSION="$(tr -d '[:space:]' < "$SITE_DIR/$PREV/VERSION")"; fi
+        SHA="$(release_revision "$SITE_DIR/$PREV")"
+        VERSION="$(release_version "$SITE_DIR/$PREV")"
         RESULT=already-live
         say "=== Release $RELEASE is already live; nothing changed"
         exit 0
@@ -453,8 +261,8 @@ UNPACKED=1
 touch "$REL"
 ln -s ../../shared/.htaccess "$REL/.htaccess"
 ln -s ../../shared/uploads "$REL/uploads"
-VERSION="$(tr -d '[:space:]' < "$REL/VERSION")"
-SHA="$(tr -d '[:space:]' < "$REL/REVISION")"
+VERSION="$(release_version "$REL")"
+SHA="$(release_revision "$REL")"
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { SHA="-"; die "REVISION is not a full commit sha"; }
 say "a. Unpacked release $RELEASE (version $VERSION, commit $SHA)"
 
@@ -479,23 +287,9 @@ sleep "$SETTLE_SECONDS"
 # ---------------------------------------------------------------- c. backup
 STEP=backup
 write_option_file
-new_errfile
 BACKUP="$BACKUPS/pre-deploy-$(date -u +%Y%m%dT%H%M%SZ)-$RELEASE.sql.gz"
-dump_rc=0
-(
-    umask 077
-    mysqldump --defaults-extra-file="$OPT" --single-transaction --routines --triggers \
-        --no-tablespaces "$DB_NAME" 2> "$ERRF" | gzip -c > "$BACKUP.partial"
-) || dump_rc=$?
-log_errfile mysqldump
-[ "$dump_rc" -eq 0 ] || die "The backup failed (exit $dump_rc)"
-gzip -t "$BACKUP.partial" || die "The backup is not a valid gzip file"
-size="$(stat -c %s "$BACKUP.partial")"
-[ "$size" -ge 1024 ] || die "The backup is suspiciously small ($size bytes)"
-gzip -dc "$BACKUP.partial" | tail -n 1 | grep -q 'Dump completed' || die "The backup is incomplete"
-mv -f "$BACKUP.partial" "$BACKUP"
-chmod 600 "$BACKUP"
-say "c. Backup $(basename "$BACKUP") ($size bytes)"
+dump_database "$BACKUP" || die "$DUMP_ERROR"
+say "c. Backup $(basename "$BACKUP") ($(stat -c %s "$BACKUP") bytes)"
 
 # ---------------------------------------------------------------- d. migrate
 STEP=migrate
@@ -513,27 +307,14 @@ printf '%s\n' "$migrate_out" | tail -n 40 | while IFS= read -r line; do say "   
 [ "$migrate_rc" -eq 0 ] || die "Migrations failed (exit $migrate_rc)"
 say "d. Migrations done"
 
-# Outside production the app never sends WhatsApp (outbound_is_live()), but a
-# DEV/test database is often a copy of PROD's, with PROD's real WhatsApp
-# token in it. Overwrite it, so the token can't be used from this database
-# even by code that skips the app's gate. Runs after migrations so it also
-# covers a token a migration might add, and before the switch so a failure
-# here rolls back like any other step (the restore then puts the database,
-# token included, back as it was before the deploy).
-#
-# If email/SMTP settings (or any other messaging credential) are ever stored
-# in the database, clear them here too.
+# Outside production: overwrite the WhatsApp token (disable_messaging() in
+# deploy-lib.sh). After migrations, so it also covers a token a migration
+# might add; before the switch, so a failure here rolls back like any other
+# step (the restore then puts the database, token included, back as it was
+# before the deploy).
 if [ "$SITE_CI_ENV" != production ]; then
     STEP=disable-messaging
-    new_errfile || die "Could not create a file for error output"
-    if ! changed="$(mysql --defaults-extra-file="$OPT" -N -B \
-        -e "UPDATE data_konfig SET token_wa = 'DISABLED-NON-PROD'; SELECT ROW_COUNT();" \
-        "$DB_NAME" < /dev/null 2> "$ERRF")"; then
-        log_errfile mysql
-        die "Could not disable the WhatsApp token in data_konfig"
-    fi
-    log_errfile mysql
-    say "d. WhatsApp token in data_konfig set to DISABLED-NON-PROD (ci_env=$SITE_CI_ENV; ${changed:-0} row(s) changed)"
+    disable_messaging "d." || die "Could not disable the WhatsApp token in data_konfig"
 fi
 
 # ---------------------------------------------------------------- e. switch
@@ -547,32 +328,7 @@ restart_php "e."
 
 # ---------------------------------------------------------------- f. health
 STEP=health
-TMP_BODY="$(mktemp "$SITE_DIR/.health.XXXXXX")"
-healthy=0
-for ((i = 1; i <= HEALTH_TRIES; i++)); do
-    code="$(curl -sS -o "$TMP_BODY" -w '%{http_code}' --max-time 10 \
-        -H 'Cache-Control: no-cache' "$HEALTH_URL?deploy=$RELEASE" 2>/dev/null)" || code=000
-    # Look at the JSON, not just the HTTP status: development mode can
-    # answer 200 with "status":"error" (docs/HEALTH_AND_MAINTENANCE.md).
-    if verdict="$("$PHP" -r '
-        $body = (string) stream_get_contents(STDIN);
-        $j = preg_match("/\\{[^{}]*\\}\\s*\$/", $body, $m) ? json_decode($m[0], true) : null;
-        if (!is_array($j)) { echo "no Health JSON in the answer"; exit(1); }
-        $s = function ($k) use ($j) { return isset($j[$k]) ? var_export($j[$k], true) : "missing"; };
-        echo "status=", $s("status"), " version=", $s("version"), " database=", $s("database"),
-             " migrations=", $s("migrations"), " maintenance=", $s("maintenance"),
-             " revision=", $s("revision"), " outbound=", $s("outbound");
-        exit(($j["status"] ?? null) === "ok" && ($j["version"] ?? null) === $argv[1]
-            && ($j["revision"] ?? null) === $argv[2] && ($j["outbound"] ?? null) === $argv[3] ? 0 : 1);
-    ' -- "$VERSION" "$SHA" "$EXPECTED_OUTBOUND" < "$TMP_BODY" 2>/dev/null)"; then
-        healthy=1
-        say "f. Health ok (HTTP $code, $verdict)"
-        break
-    fi
-    say "f. Health attempt $i/$HEALTH_TRIES not ok (HTTP $code, ${verdict:-no answer}; want version '$VERSION', revision '$SHA', outbound '$EXPECTED_OUTBOUND')"
-    if [ "$i" -lt "$HEALTH_TRIES" ]; then sleep "$HEALTH_WAIT"; fi
-done
-[ "$healthy" = 1 ] || die "Health check failed"
+health_check "f." "$VERSION" "$SHA" "$EXPECTED_OUTBOUND" "deploy=$RELEASE" || die "Health check failed"
 
 # ---------------------------------------------------------------- g. maintenance off, cleanup
 STEP=maintenance-off
@@ -584,13 +340,19 @@ say "g. Maintenance off"
 STEP=cleanup
 live="$(readlink "$CURRENT")"
 live="${live#releases/}"
+# Keep the newest 3, the live release, and the release that was live before
+# this deploy (its recorded previous=, what "roll back to previous" goes to):
+# after a rollback that one can be older than the newest 3.
+previous="${PREV#releases/}"
 find "$RELEASES" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%T@ %f\n' \
     | sort -rn | awk -v keep="$KEEP_RELEASES" 'NR > keep { print $2 }' \
     | while IFS= read -r old; do
-        if [ -n "$old" ] && [ "$old" != "$live" ]; then
+        if [ -n "$old" ] && [ "$old" != "$live" ] && [ "$old" != "$previous" ]; then
             rm -rf "${RELEASES:?}/$old" && say "g. Removed old release $old"
         fi
     done || say "g. Warning: could not clean up old releases"
+# Only pre-deploy backups: pre-rollback backups (rollback.sh) are never
+# deleted automatically.
 find "$BACKUPS" -maxdepth 1 -type f -name 'pre-deploy-*.sql.gz' -printf '%f\n' \
     | sort -r | tail -n +"$((KEEP_BACKUPS + 1))" \
     | while IFS= read -r old; do

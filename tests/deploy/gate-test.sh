@@ -5,8 +5,8 @@
 #
 #   bash tests/deploy/gate-test.sh
 #
-# gate.sh is copied into a temporary bin folder next to a stub deploy.sh
-# that records its arguments and stdin.
+# gate.sh is copied into a temporary bin folder next to stub deploy.sh and
+# rollback.sh scripts that record their arguments, stdin and environment.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -22,14 +22,21 @@ printf '%s\n' "$@" > "$(dirname "$0")/called-with"
 cat > "$(dirname "$0")/stdin-received"
 env > "$(dirname "$0")/env-received"
 EOF
-chmod +x "$BIN/gate.sh" "$BIN/deploy.sh"
+cat > "$BIN/rollback.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$@" > "$(dirname "$0")/rollback-called-with"
+cat > "$(dirname "$0")/rollback-stdin"
+env > "$(dirname "$0")/rollback-env"
+EOF
+chmod +x "$BIN/gate.sh" "$BIN/deploy.sh" "$BIN/rollback.sh"
 printf '# sites the GitHub key may deploy\ndev\n  staging  \n' > "$BIN/sites.allow"
 
 pass=0
 fail=0
 
 run_gate() { # <ssh command or __unset__> -> sets $status
-    rm -f "$BIN/called-with" "$BIN/stdin-received" "$BIN/env-received"
+    rm -f "$BIN/called-with" "$BIN/stdin-received" "$BIN/env-received" \
+        "$BIN/rollback-called-with" "$BIN/rollback-stdin" "$BIN/rollback-env"
     if [ "$1" = __unset__ ]; then
         (unset SSH_ORIGINAL_COMMAND; printf 'TARBALL' | "$BIN/gate.sh") > /dev/null 2>&1
     else
@@ -58,10 +65,22 @@ expect_refused() { # <command> <description>
     lines_before="$({ wc -l < "$BIN/gate.log"; } 2>/dev/null || echo 0)"
     run_gate "$1"
     lines_after="$({ wc -l < "$BIN/gate.log"; } 2>/dev/null || echo 0)"
-    if [ "$status" -eq 1 ] && [ ! -f "$BIN/called-with" ] && [ "$lines_after" -gt "$lines_before" ]; then
+    if [ "$status" -eq 1 ] && [ ! -f "$BIN/called-with" ] && [ ! -f "$BIN/rollback-called-with" ] \
+        && [ "$lines_after" -gt "$lines_before" ]; then
         ok "refuses $2"
     else
-        not_ok "refuses $2 (exit $status, deploy.sh called: $([ -f "$BIN/called-with" ] && echo yes || echo no))"
+        not_ok "refuses $2 (exit $status, deploy.sh called: $([ -f "$BIN/called-with" ] && echo yes || echo no), rollback.sh called: $([ -f "$BIN/rollback-called-with" ] && echo yes || echo no))"
+    fi
+}
+
+expect_rollback() { # <command> <site> <release> <type>
+    run_gate "$1"
+    if [ "$status" -eq 0 ] && [ ! -f "$BIN/called-with" ] && [ -f "$BIN/rollback-called-with" ] \
+        && [ "$(cat "$BIN/rollback-called-with")" = "$(printf '%s\n%s\n%s' "$2" "$3" "$4")" ] \
+        && [ ! -s "$BIN/rollback-stdin" ]; then
+        ok "accepts: $1 (rollback.sh, nothing on stdin)"
+    else
+        not_ok "accepts: $1 (exit $status)"
     fi
 }
 
@@ -98,7 +117,28 @@ expect_refused "deploy dev -rf" "a release id starting with a dash"
 expect_refused "deploy dev a/b" "a slash in the release id"
 expect_refused "deploy dev $(printf 'a%.0s' {1..65})" "a 65-character release id"
 expect_refused "deploy ../dev abc1234" "a path as site"
-expect_refused "rollback dev abc1234" "another verb"
+expect_refused "undeploy dev abc1234" "another verb"
+
+# Rollback: exactly "rollback <site> <release-id|previous> <code|code-db>"
+expect_rollback "rollback dev previous code" dev previous code
+expect_rollback "rollback dev previous code-db" dev previous code-db
+expect_rollback "rollback dev 0123456789ab code" dev 0123456789ab code
+expect_rollback "rollback staging abc1234 code-db" staging abc1234 code-db
+expect_refused "rollback dev abc1234" "a rollback without a type"
+expect_refused "rollback dev" "a rollback without release and type"
+expect_refused "rollback dev previous both" "an unknown rollback type"
+expect_refused "rollback dev previous CODE" "a rollback type in the wrong case"
+expect_refused "rollback dev previous code extra" "an extra rollback argument"
+expect_refused "rollback dev previous  code" "a double space in a rollback"
+expect_refused "rollback dev previous code " "a trailing space in a rollback"
+expect_refused "$(printf 'rollback\tdev\tprevious\tcode')" "tabs in a rollback"
+expect_refused "$(printf 'rollback dev previous code\nid')" "a second line after a rollback"
+expect_refused "rollback dev previous code;id" "a ; after the rollback type"
+expect_refused "rollback prod previous code" "a rollback of a site not in sites.allow"
+expect_refused "rollback dev ../x code" "a path as rollback target"
+expect_refused "rollback dev .hidden code" "a rollback target starting with a dot"
+expect_refused "rollback dev -x code-db" "a rollback target starting with a dash"
+expect_refused 'rollback dev $(id) code' "command substitution in a rollback"
 expect_refused "scp -t /home" "scp"
 expect_refused "rsync --server ." "rsync"
 
@@ -109,6 +149,20 @@ if grep -q '^DEPLOY_ROOT=' "$BIN/env-received" || grep -q '^SSH_ORIGINAL_COMMAND
 else
     ok "deploy.sh gets a clean environment"
 fi
+
+# rollback.sh gets a clean environment too.
+run_gate "rollback dev previous code"
+if grep -q '^DEPLOY_ROOT=' "$BIN/rollback-env" || grep -q '^SSH_ORIGINAL_COMMAND=' "$BIN/rollback-env"; then
+    not_ok "rollback.sh gets a clean environment"
+else
+    ok "rollback.sh gets a clean environment"
+fi
+
+# Without rollback.sh, a rollback is refused (deploys still work).
+mv "$BIN/rollback.sh" "$BIN/rollback.sh.off"
+expect_refused "rollback dev previous code" "a rollback when rollback.sh is missing"
+expect_accepted "deploy dev abc1234" dev abc1234
+mv "$BIN/rollback.sh.off" "$BIN/rollback.sh"
 
 # The log keeps refused commands printable and short.
 if grep -q 'refused (bad command) from 203.0.113.9: deploy dev abc1234?rm -rf ~' "$BIN/gate.log" \
