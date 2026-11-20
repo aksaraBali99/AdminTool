@@ -12,11 +12,11 @@ work:
 | `rollback.sh` | `~/apps/admintool/bin/rollback.sh` | Rolls the live release back to a kept one, by hand (see "Rolling back a live release"). |
 | `deploy-lib.sh` | `~/apps/admintool/bin/deploy-lib.sh` | Helpers both scripts load: logging and masking, the site checks, backups and restore, the switch, the Health check. Never run on its own. |
 
-DEV (`dev`, admin-dev.englishhubbali.com) uses this. The PROD sites
-(`pemogan`, adminpemogan.englishhubbali.com, then `citarum`,
-admincitarum.englishhubbali.com) switch to it one at a time, as described in
-"Switching a PROD site"; until a site has switched, it still uses
-Hostinger's Git deploy.
+DEV (`dev`, admin-dev.englishhubbali.com) and both PROD sites (`pemogan`,
+adminpemogan.englishhubbali.com, and `citarum`,
+admincitarum.englishhubbali.com) use this. The PROD sites switched from
+Hostinger's Git deploy on 20 Nov 2026 (see "Record: PROD switch, 20 Nov
+2026"); Hostinger's Git auto-deploy is off on both.
 
 ## Where things are on the server
 
@@ -288,8 +288,9 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
 ## Switching a PROD site
 
 PROD deploys run from the `production` branch (a release PR from `main`
-into `production`, see `docs/RELEASING.md`). Pemogan switches first,
-Citarum on a later evening. Never print `.htaccess` values or keys while
+into `production`, see `docs/RELEASING.md`). Pemogan switched first,
+then Citarum the same evening (20 Nov 2026); the steps below are kept for
+a new PROD site or a switch back and forth. Never print `.htaccess` values or keys while
 doing this: names and set/not set only.
 
 How the PROD part of `.github/workflows/deploy.yml` works:
@@ -834,6 +835,46 @@ script backups in `bin/` were deleted. DEV was left on `984635c6709d` (live
 through a rollback, so the next `code and database` needs a fresh deploy
 first).
 
+### Record: PROD switch, 20 Nov 2026
+
+Release 1.2.0 (PR #35, merge commit `48975370c7df` on `production`), the
+first release over the SSH deploy. Both sites switched the same evening,
+following "Switching a PROD site", after the read-only preflight that
+afternoon (both on Hostinger's checkout of `c9f878a`, version 1.1.1;
+`SetEnv CI_ENV production` already present; no cron jobs for the app).
+
+Before the release merge: `gate.sh` with profiles installed (sha256 checked
+against `main`, 7 refusal tests with the DEV key), the PROD key added
+(`gate.sh prod`, `restrict`; 8 refusal tests with it, 3 more with the DEV
+key, all in `gate.log`), `prod-pemogan` / `prod-citarum` set up (the
+required reviewer needed a second save: check the protection rules after
+saving), Hostinger's Git auto-deploy turned off on both sites. The release
+merge started no PROD deploy (both switches off) and neither site's
+`public_html` changed, which confirmed the auto-deploy was off; the repo
+has no webhooks, so GitHub can't show that setting.
+
+| Step | Pemogan | Citarum |
+| --- | --- | --- |
+| Shared `.htaccess` | from `public_html/.htaccess`: `MIGRATE_TOKEN` and the stray `htaccess:` line dropped, `MAINTENANCE_FILE` added; `CI_ENV` = `production` | the same (no stray line) |
+| Uploads copied | 4/4 files incl. 2 untracked, identical | 2/2, identical |
+| First deploy | ✅ 21:25 WITA, `success`: migrated 20261028000000 → 20261116030000, Health ok on the first try with `outbound` `live`, about a minute of maintenance; backup 92,879 bytes | ❌ 1st attempt: "Connection closed by host" (exit 255) before `gate.sh` ran, nothing changed (see "Known issues"). ✅ re-run at 21:52 WITA, `success`, same steps; backup 16,403 bytes |
+| Re-run | ✅ `already-live`, nothing changed | ✅ `already-live`, nothing changed |
+| Health | ok, 1.2.0, revision `48975370c7df…`, `"outbound":"live"` | the same |
+| Backup | mode 600, `gunzip -t` ok, "Dump completed" | the same |
+| Uploads after the deploy | `public_html.pre-deploy/uploads` = `shared/uploads` | the same |
+| Automatic deploys | `DEPLOY_PROD_PEMOGAN_ENABLED=true` | `DEPLOY_PROD_CITARUM_ENABLED=true` |
+
+The migration changed no existing rows (checked beforehand: `status_hadir`
+held only `Hadir` and `Izin`, no empty values).
+
+Approving a run: in "Review deployments", **tick the environment's
+checkbox** before "Approve and deploy"; without it nothing is recorded and
+the job keeps waiting.
+
+Still to do: R1 on each site at the next real release (see "Accepting a
+PROD site"), then delete each site's `deploy/public_html.pre-deploy`; the
+clean-up in "Clean-up later".
+
 ## Known issues
 
 - **Restoring a backup changes how some `tagihan.tipe` values are stored.**
@@ -848,6 +889,13 @@ first).
   `CHECKSUM TABLE` change. Compare row data, not checksums, around a
   restore of `tagihan`. Not fixed yet: parked until the deploy work
   (EHU-0023) is done, then to get its own Solava task.
+- **The server sometimes refuses SSH for a minute.** After many SSH logins
+  in a short time (seen on 20 Nov 2026, during the PROD switch), the
+  server closed new connections before login ("Connection closed by
+  <host> port 65002", exit 255), from GitHub and from a developer's
+  machine alike. Nothing reaches `gate.sh` then, so nothing changes and
+  `gate.log` gets no line. Re-run the job (Actions > Re-run failed jobs)
+  a minute later. Avoid bursts of SSH logins right before a deploy.
 
 ## Tests
 
