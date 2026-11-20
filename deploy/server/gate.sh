@@ -3,14 +3,24 @@
 #   ~/apps/<app>/bin/gate.sh
 # and forced for that app's key in ~/.ssh/authorized_keys, e.g. for AdminTool:
 #   command="/home/<user>/apps/admintool/bin/gate.sh",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-dev
+#   command="/home/<user>/apps/admintool/bin/gate.sh prod",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-prod
 # Each app has its own bin/ folder and its own key, so one app's key can
 # never deploy another app.
+#
+# The profile (the one optional argument in command=) picks the list of
+# sites the key may reach:
+#   (none)  sites.allow       the DEV key. Never a site whose
+#                             bin/sites/<site>.conf says ci_env=production,
+#                             even if that site is in sites.allow by mistake.
+#   prod    sites.allow.prod  the PROD key. Only sites whose
+#                             bin/sites/<site>.conf says ci_env=production.
+# Any other argument is refused.
 #
 # sshd puts what the client asked to run in $SSH_ORIGINAL_COMMAND. The only
 # accepted forms are exactly
 #   deploy <site> <release-id>
 #   rollback <site> <release-id|previous> <code|code-db>
-# where <site> is a line of sites.allow (next to this script) and
+# where <site> is a line of the profile's allow-list (next to this script) and
 # <release-id> matches ^[0-9A-Za-z._-]{1,64}$ (and isn't "." or ".." or
 # starting with "." or "-"). For deploy, the release tarball arrives on
 # stdin and is passed straight to deploy.sh; rollback.sh reads nothing from
@@ -23,7 +33,6 @@
 set -uo pipefail
 
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-ALLOW_FILE="$BIN_DIR/sites.allow"
 DEPLOY="$BIN_DIR/deploy.sh"
 ROLLBACK="$BIN_DIR/rollback.sh"
 GATE_LOG="$BIN_DIR/gate.log"
@@ -38,6 +47,14 @@ refuse() {
     echo "gate: refused ($1)" >&2
     exit 1
 }
+
+# The profile comes from command= in authorized_keys, never from the client.
+profile="${1-}"
+case "$#:$profile" in
+    0:) profile=dev; ALLOW_FILE="$BIN_DIR/sites.allow" ;;
+    1:prod) ALLOW_FILE="$BIN_DIR/sites.allow.prod" ;;
+    *) refuse "bad profile" ;;
+esac
 
 cmd="${SSH_ORIGINAL_COMMAND-}"
 [ -n "$cmd" ] || refuse "no command"
@@ -64,10 +81,26 @@ case "$release" in
     .*|-*) refuse "bad release id" ;;
 esac
 
-[ -f "$ALLOW_FILE" ] || refuse "no sites.allow"
+[ -f "$ALLOW_FILE" ] || refuse "no $(basename "$ALLOW_FILE")"
 # Whole-line match, ignoring comments and surrounding spaces.
 if ! sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$ALLOW_FILE" | grep -Fxq -- "$site"; then
-    refuse "site not allowed"
+    refuse "site not allowed ($profile)"
+fi
+
+# Second lock, from the site's own config (same format deploy.sh reads):
+# the DEV key never reaches a production site, the PROD key only reaches
+# production sites.
+site_ci_env=""
+if [ -f "$BIN_DIR/sites/$site.conf" ]; then
+    site_ci_env="$(tr -d '\r' < "$BIN_DIR/sites/$site.conf" \
+        | sed -n 's/^[[:space:]]*ci_env[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' \
+        | tail -n1)"
+fi
+if [ "$profile" = prod ] && [ "$site_ci_env" != production ]; then
+    refuse "not a production site ($profile)"
+fi
+if [ "$profile" = dev ] && [ "$site_ci_env" = production ]; then
+    refuse "production site ($profile)"
 fi
 
 if [ "$action" = deploy ]; then
