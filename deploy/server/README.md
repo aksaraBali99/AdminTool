@@ -306,12 +306,22 @@ How the PROD part of `.github/workflows/deploy.yml` works:
   variables don't matter for manual runs.
 - Each site's job (`deploy-site.yml`) runs in its environment
   (`prod-pemogan`, `prod-citarum`): it waits for approval, then **stops
-  during office hours** (08:00–17:59 WITA) with "Office hours: re-run this
-  after 18:00 WITA", before connecting. It checks out and deploys exactly the
-  commit it was given, which must be on `production`. Citarum runs only
-  after Pemogan succeeded when both are chosen.
-- Deploys and rollbacks of one site share the concurrency group
-  `deploy-<site>`.
+  during office hours** (08:00–17:59 WITA, refused from 07:30 so a deploy
+  can't run into them) with "Office hours: re-run this after 18:00 WITA",
+  before connecting. It checks out and deploys exactly the commit it was
+  given, and only while that commit is still the tip of `production`: an
+  older commit (a Tests run that finished late or was re-run) never
+  replaces a newer release. Citarum runs only after Pemogan succeeded when
+  both are chosen.
+- A manual run from `main` with `prod_sites` other than `none (DEV run)`,
+  or with `sha` set, stops instead of deploying DEV.
+- Concurrency: one deploy per site at a time (`deploy-<site>`), one
+  rollback per site at a time (`rollback-<site>`); a running one is never
+  cancelled. Rollbacks have their own group because GitHub keeps only one
+  waiting run per group, so a newly queued deploy would cancel a waiting
+  emergency rollback. If a deploy and a rollback of one site reach the
+  server at the same time, the server's lock refuses the second ("Another
+  deploy of <site> is running") without changing anything; re-run it.
 
 ### Once, before the first PROD site
 
@@ -501,12 +511,15 @@ before it: **Actions > Rollback > Run workflow**, "Use workflow from"
 
 A PROD rollback runs in the site's `prod-<site>` environment: it waits for
 the required reviewer's approval and uses the PROD key. It has no
-office-hours block (a rollback is an emergency fix), and it shares the
-site's concurrency group with Deploy (`deploy-<site>`).
+office-hours block (a rollback is an emergency fix).
 
-It runs `rollback.sh` on the server, which shares the deploy lock (a
-rollback and a deploy never overlap, and the workflow waits for a running
-deploy). The steps: checks, maintenance on, (database), switch `current`,
+Rollbacks have their own concurrency group (`rollback-<site>`), not
+Deploy's, so a deploy queued later can never cancel a waiting rollback.
+`rollback.sh` shares the deploy lock on the server: a rollback and a deploy
+never overlap, and whichever comes second is refused ("Another deploy of
+<site> is running") without changing anything. If a deploy is running,
+wait for it to finish (or check it in Actions), then run the rollback. The
+steps: checks, maintenance on, (database), switch `current`,
 PHP restart, Health with the target's `VERSION`, `REVISION` and `outbound`,
 maintenance off.
 

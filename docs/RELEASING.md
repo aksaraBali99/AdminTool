@@ -26,7 +26,7 @@ from `main` into `production`.
 5. **Deploy.** Once Tests passes on `production`, Deploy starts for every
    PROD site whose `DEPLOY_PROD_<SITE>_ENABLED` variable is `true`
    (Pemogan first, Citarum only after Pemogan succeeded). Approve each
-   site's job in Actions > Deploy; during 08:00–17:59 WITA it stops with
+   site's job in Actions > Deploy; during office hours (08:00–17:59 WITA, refused from 07:30) it stops with
    "Office hours: re-run this after 18:00 WITA" and changes nothing, so
    re-run it in the evening. The deploy takes a database backup, runs the
    migrations and rolls itself back if anything fails. (A site still on

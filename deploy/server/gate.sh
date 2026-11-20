@@ -87,9 +87,13 @@ if ! sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$ALLOW_FILE
     refuse "site not allowed ($profile)"
 fi
 
-# Second lock, from the site's own config (same format deploy.sh reads):
-# the DEV key never reaches a production site, the PROD key only reaches
-# production sites.
+# Second lock, from the site's own config: the DEV key never reaches a
+# production site, the PROD key only reaches production sites.
+# This reads ci_env exactly like conf_get() in deploy-lib.sh (deploy.sh and
+# rollback.sh), copied on purpose: gate.sh runs first and loads no other
+# file. KEEP THE TWO THE SAME: if one changes (quotes, "ci_env:", ...), the
+# gate and the deploy could disagree about which sites are production.
+# tests/deploy/gate-test.sh checks CRLF and spaces around "=".
 site_ci_env=""
 if [ -f "$BIN_DIR/sites/$site.conf" ]; then
     site_ci_env="$(tr -d '\r' < "$BIN_DIR/sites/$site.conf" \

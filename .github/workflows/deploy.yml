@@ -31,7 +31,8 @@ name: Deploy
 #     production, or "sha" if given (it must be on production).
 #   - Each site's job runs in its environment (prod-pemogan, prod-citarum):
 #     it waits for the required reviewer, then refuses to start during
-#     office hours (08:00-17:59 WITA) before connecting. Citarum runs only
+#     office hours (08:00-17:59 WITA, refused from 07:30) or when the commit
+#     is no longer the tip of production, before connecting. Citarum runs only
 #     after Pemogan succeeded when both are chosen. See deploy-site.yml.
 #   On the server, the PROD key may only run "gate.sh prod"
 #   (sites.allow.prod, ci_env=production sites only).
@@ -48,12 +49,12 @@ on:
         required: true
         default: main
       prod_sites:
-        description: "PROD (run from production): which sites; Citarum after Pemogan succeeded"
+        description: "PROD (run from production): which sites; Citarum after Pemogan succeeded. Leave 'none (DEV run)' for DEV"
         type: choice
-        options: [pemogan, citarum, pemogan then citarum]
-        default: pemogan
+        options: [none (DEV run), pemogan, citarum, pemogan then citarum]
+        default: none (DEV run)
       sha:
-        description: "PROD (run from production): full commit sha on production to deploy; empty = the tip of production"
+        description: "PROD (run from production): the tip of production's full commit sha (set by the automatic run); empty = the tip of production"
         required: false
         default: ""
 
@@ -78,6 +79,17 @@ jobs:
       cancel-in-progress: false
 
     steps:
+      - name: Not a PROD run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PROD_SITES: ${{ inputs.prod_sites }}
+          SHA_INPUT: ${{ inputs.sha }}
+        run: |
+          if [ "$PROD_SITES" != "none (DEV run)" ] || [ -n "$SHA_INPUT" ]; then
+            echo "::error::PROD inputs (prod_sites or sha) are set on a run from $GITHUB_REF_NAME, which deploys DEV. For PROD, run Deploy from production; for DEV, leave prod_sites on 'none (DEV run)' and sha empty. Nothing was deployed."
+            exit 1
+          fi
+
       - name: Check out the code to deploy
         uses: actions/checkout@v4
         with:
@@ -235,8 +247,6 @@ jobs:
     steps:
       - name: Check out production
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Choose the commit and the sites
         id: plan
@@ -250,11 +260,16 @@ jobs:
             echo "::error::'sha' must be a full 40-character commit sha (or empty for the tip of production)."
             exit 1
           fi
-          if ! git cat-file -e "$sha^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$sha" "$GITHUB_SHA"; then
-            echo "::error::$sha is not a commit on production. Nothing was started."
+          # Only the tip of production, so an older commit (a late or re-run
+          # Tests run) never replaces a newer release. Each site checks
+          # again after approval.
+          tip="$(git ls-remote origin refs/heads/production | cut -f1)"
+          if [ "$sha" != "$tip" ]; then
+            echo "::error::$sha is not the tip of production ($tip): a newer commit is on production, and its own run deploys it. Nothing was started."
             exit 1
           fi
           case "$SITES" in
+            "none (DEV run)") echo "::error::Choose the PROD sites in prod_sites. Nothing was started."; exit 1 ;;
             pemogan) p=true; c=false ;;
             citarum) p=false; c=true ;;
             "pemogan then citarum") p=true; c=true ;;
@@ -268,12 +283,12 @@ jobs:
           {
             echo "### PROD deploy plan"
             echo
-            echo "Commit \`${sha:0:12}\` ($(git log -1 --format=%s "$sha"))"
+            echo "Commit \`${sha:0:12}\` ($(git log -1 --format=%s "$sha" 2>/dev/null || echo "the tip of production"))"
             echo
             echo "- pemogan: $([ "$p" = true ] && echo "yes" || echo "not chosen")"
             echo "- citarum: $([ "$c" = true ] && { [ "$p" = true ] && echo "yes, after Pemogan succeeded" || echo "yes"; } || echo "not chosen")"
             echo
-            echo "Each site waits for approval, then refuses to start during office hours (08:00-17:59 WITA)."
+            echo "Each site waits for approval, then refuses to start during office hours (08:00-17:59 WITA; from 07:30, so a deploy can't run into them) or if production has moved on."
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy-pemogan:

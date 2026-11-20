@@ -46,10 +46,10 @@ run_gate() { # <ssh command or __unset__> -> sets $status
     rm -f "$BIN/called-with" "$BIN/stdin-received" "$BIN/env-received" \
         "$BIN/rollback-called-with" "$BIN/rollback-stdin" "$BIN/rollback-env"
     if [ "$1" = __unset__ ]; then
-        (unset SSH_ORIGINAL_COMMAND; printf 'TARBALL' | "$BIN/gate.sh" "${GATE_ARGS[@]}") > /dev/null 2>&1
+        (unset SSH_ORIGINAL_COMMAND; printf 'TARBALL' | "$BIN/gate.sh" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"}) > /dev/null 2>&1
     else
         printf 'TARBALL' | SSH_ORIGINAL_COMMAND="$1" SSH_CLIENT="203.0.113.9 50000 65002" \
-            DEPLOY_ROOT=/should/not/pass "$BIN/gate.sh" "${GATE_ARGS[@]}" > /dev/null 2>&1
+            DEPLOY_ROOT=/should/not/pass "$BIN/gate.sh" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"} > /dev/null 2>&1
     fi
     status=$?
 }

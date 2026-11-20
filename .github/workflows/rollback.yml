@@ -19,8 +19,11 @@ name: Rollback
 # Uses the site's environment, as Deploy does: "dev" (only runs from main),
 # or "prod-<site>" for a PROD site (only runs from production, waits for the
 # required reviewer's approval, PROD key). No office-hours block: a rollback
-# is an emergency fix. Shares Deploy's concurrency group for the site
-# (deploy-<site>), so a rollback and a deploy never overlap.
+# is an emergency fix. Own concurrency group (rollback-<site>), not Deploy's:
+# GitHub keeps only one waiting run per group, so a shared group would let a
+# newly queued deploy cancel a waiting rollback. A rollback and a deploy still
+# never overlap on the server: its lock refuses the second one ("Another
+# deploy of <site> is running") without changing anything; re-run it.
 
 on:
   workflow_dispatch:
@@ -52,14 +55,13 @@ permissions:
 jobs:
   rollback:
     name: Roll back ${{ inputs.site }}
-    if: inputs.site == 'dev' || inputs.site == 'pemogan' || inputs.site == 'citarum'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.site == 'dev' && 'dev' || format('prod-{0}', inputs.site) }}
-    # Same group as Deploy: one deploy or rollback of a site at a time, and
-    # a running one is never cancelled.
+    # One rollback of a site at a time, a running one never cancelled. Not
+    # Deploy's group (see above).
     concurrency:
-      group: deploy-${{ inputs.site }}
+      group: rollback-${{ inputs.site }}
       cancel-in-progress: false
 
     steps:
