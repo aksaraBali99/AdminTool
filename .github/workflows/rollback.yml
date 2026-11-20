@@ -1,7 +1,10 @@
 name: Rollback
 
-# Rolls DEV (admin-dev.englishhubbali.com) back to an earlier release that is
-# still on the server, by hand only: Actions > Rollback > Run workflow.
+# Rolls a site back to an earlier release that is still on the server, by
+# hand only: Actions > Rollback > Run workflow.
+#   dev      admin-dev.englishhubbali.com     run from main
+#   pemogan  adminpemogan.englishhubbali.com  run from production
+#   citarum  admincitarum.englishhubbali.com  run from production
 # The server side is deploy/server/rollback.sh, started by gate.sh; see
 # "Rolling back a live release" in deploy/server/README.md.
 #
@@ -13,16 +16,19 @@ name: Rollback
 #                       lost from the live database (it is saved first in a
 #                       pre-rollback backup on the server).
 #
-# Uses the "dev" environment (only runs from main, same secrets as Deploy)
-# and Deploy's concurrency group, so a rollback and a deploy never overlap.
+# Uses the site's environment, as Deploy does: "dev" (only runs from main),
+# or "prod-<site>" for a PROD site (only runs from production, waits for the
+# required reviewer's approval, PROD key). No office-hours block: a rollback
+# is an emergency fix. Shares Deploy's concurrency group for the site
+# (deploy-<site>), so a rollback and a deploy never overlap.
 
 on:
   workflow_dispatch:
     inputs:
       site:
-        description: Site to roll back
+        description: Site to roll back (dev from main; pemogan, citarum from production)
         type: choice
-        options: [dev]
+        options: [dev, pemogan, citarum]
         default: dev
       type:
         description: >-
@@ -44,16 +50,16 @@ permissions:
   contents: read
 
 jobs:
-  rollback-dev:
-    name: Roll back DEV
-    if: inputs.site == 'dev'
+  rollback:
+    name: Roll back ${{ inputs.site }}
+    if: inputs.site == 'dev' || inputs.site == 'pemogan' || inputs.site == 'citarum'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: dev
-    # Same group as Deploy: one deploy or rollback of DEV at a time, and a
-    # running one is never cancelled.
+    environment: ${{ inputs.site == 'dev' && 'dev' || format('prod-{0}', inputs.site) }}
+    # Same group as Deploy: one deploy or rollback of a site at a time, and
+    # a running one is never cancelled.
     concurrency:
-      group: deploy-dev
+      group: deploy-${{ inputs.site }}
       cancel-in-progress: false
 
     steps:
@@ -80,8 +86,18 @@ jobs:
             echo "::error::Not a release id: use the id from the Deploy summary (e.g. 0123456789ab), or leave it empty for the previous release."
             exit 1
           fi
-          echo "type=$type" >> "$GITHUB_OUTPUT"
-          echo "target=$target" >> "$GITHUB_OUTPUT"
+          case "$SITE" in
+            dev) domain=admin-dev.englishhubbali.com; env_name=dev ;;
+            pemogan) domain=adminpemogan.englishhubbali.com; env_name=prod-pemogan ;;
+            citarum) domain=admincitarum.englishhubbali.com; env_name=prod-citarum ;;
+            *) echo "::error::Unknown site."; exit 1 ;;
+          esac
+          {
+            echo "type=$type"
+            echo "target=$target"
+            echo "domain=$domain"
+            echo "env_name=$env_name"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Roll back over SSH
         env:
@@ -90,13 +106,15 @@ jobs:
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SITE: ${{ inputs.site }}
+          ENV_NAME: ${{ steps.inputs.outputs.env_name }}
           TARGET: ${{ steps.inputs.outputs.target }}
           TYPE: ${{ steps.inputs.outputs.type }}
         run: |
           set -euo pipefail
           for name in DEPLOY_SSH_KEY DEPLOY_HOST DEPLOY_PORT DEPLOY_USER DEPLOY_KNOWN_HOSTS; do
             if [ -z "${!name}" ]; then
-              echo "::error::Secret $name is not set in the 'dev' environment."
+              echo "::error::Secret $name is not set in the '$ENV_NAME' environment."
               exit 1
             fi
           done
@@ -109,12 +127,14 @@ jobs:
           chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
 
           # Same pinned host key as Deploy; the server side only accepts
-          # "rollback <site> <release-id|previous> <code|code-db>" (gate.sh).
+          # "rollback <site> <release-id|previous> <code|code-db>" (gate.sh:
+          # the PROD key only for sites.allow.prod, the DEV key never for a
+          # production site).
           ssh -i "$ssh_dir/key" -p "$DEPLOY_PORT" \
             -o IdentitiesOnly=yes -o BatchMode=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "rollback dev $TARGET $TYPE" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "rollback $SITE $TARGET $TYPE" \
             < /dev/null 2>&1 | tee "$RUNNER_TEMP/rollback-output.txt"
 
       - name: Remove the SSH key
@@ -124,6 +144,8 @@ jobs:
       - name: Job summary
         if: always() && steps.inputs.outcome == 'success'
         env:
+          SITE: ${{ inputs.site }}
+          DOMAIN: ${{ steps.inputs.outputs.domain }}
           TYPE: ${{ inputs.type }}
         run: |
           set -uo pipefail
@@ -139,15 +161,15 @@ jobs:
             *) shown="❌ no result from the server (see the Roll back step's log)" ;;
           esac
           {
-            echo "### Rollback of DEV"
+            echo "### Rollback of $SITE"
             echo
             echo "| Site | Type | From | To | Database put back to | Pre-rollback backup | Result |"
             echo "| --- | --- | --- | --- | --- | --- | --- |"
-            echo "| dev (admin-dev.englishhubbali.com) | $TYPE | \`${from:--}\` | \`${to:--}\` | ${restored:+\`$restored\`} | ${backup:+\`$backup\`} | $shown |"
+            echo "| $SITE ($DOMAIN) | $TYPE | \`${from:--}\` | \`${to:--}\` | ${restored:+\`$restored\`} | ${backup:+\`$backup\`} | $shown |"
             if [ -n "$restored" ]; then
               echo
               echo "The database is as it was at \`$restored\` (its name has the UTC time). Everything written after that is only in the pre-rollback backup."
             fi
             echo
-            echo "Server logs: \`~/domains/admin-dev.englishhubbali.com/deploy/logs/\` (deploy.log and history.log)."
+            echo "Server logs: \`~/domains/$DOMAIN/deploy/logs/\` (deploy.log and history.log)."
           } >> "$GITHUB_STEP_SUMMARY"
