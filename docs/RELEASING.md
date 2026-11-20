@@ -47,9 +47,8 @@ from `main` into `production`.
 **Before the first release that contains EHU-0023-6** (the production-only
 gate for WhatsApp/email): each PROD site's `.htaccess` must have
 `SetEnv CI_ENV production`, spelled exactly like that. Checked on 20 Nov
-2026: both PROD sites already have it. After that release, check that
-WhatsApp still goes out (see "Accepting a PROD site" in
-[deploy/server/README.md](../deploy/server/README.md)).
+2026: both PROD sites already have it. After that release, Health must
+show `"outbound":"live"` on each PROD site (step 7).
 
 ## Which number to bump
 

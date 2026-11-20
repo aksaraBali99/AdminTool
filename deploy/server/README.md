@@ -425,26 +425,10 @@ A PROD site counts as switched when all of these pass:
 | Re-run | run the same Deploy again (same commit) | green, `already-live`, nothing changed |
 | Health | `https://<domain>/index.php/Health` | `"status":"ok"`, `"version"` = `VERSION` of the release, `"revision"` = its full commit sha, `"migrations":"ok"`, `"outbound":"live"` |
 | Backup | on the server: `ls -l ~/apps/admintool/backups/<site>/` and `gunzip -t <the pre-deploy file>` | a `pre-deploy-…-<release>.sql.gz`, mode 600, `gunzip -t` silent with exit 0 |
-| WhatsApp | see below | a real message was sent |
 
-**WhatsApp check.** This release is the first one with the production-only
-gate (EHU-0023-6), so it is the first real test that PROD still sends.
-Health's `"outbound":"live"` shows the app sees `CI_ENV=production`, but
-not that a message actually goes out. Don't use a real student's number,
-and don't create a test student on PROD: adding one and sending Kirim
-Tagihan writes rows the app can't fully remove (`hapus_peserta` deletes
-only `peserta`; its `lead_status_history` row, its two `tagihan` rows and
-the `reminder_tagihan` log stay, and Pending `tagihan` count on the
-dashboard). Instead, the next real Kirim Tagihan after the deploy is the
-check: on the first working day, read the newest rows (read-only):
-
-```sql
-SELECT id_log, response, LEFT(keterangan, 40) FROM reminder_tagihan ORDER BY id_log DESC LIMIT 5;
-```
-
-Rows written after the deploy must say `Sukses`; any `NOT SENT (...)` means
-the gate blocked it (fix `CI_ENV`, then ask the staff to resend). Tell the
-staff beforehand to report an invoice the parent didn't get.
+There is no separate WhatsApp test: Health's `"outbound":"live"` (which the
+deploy itself also requires on a `ci_env=production` site) shows the app
+runs as production, where WhatsApp and email are sent.
 
 **Why these checks and not C1–C3 / R1–R4 on PROD:** PROD runs the same
 `gate.sh`, `deploy.sh`, `rollback.sh` and `deploy-lib.sh` as DEV, where C1–C3
