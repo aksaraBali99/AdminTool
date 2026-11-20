@@ -1,7 +1,11 @@
 # Releasing to PROD
 
-`main` deploys automatically to DEV. `production` deploys automatically to
-both PROD sites. A release is a pull request from `main` into `production`.
+`main` deploys automatically to DEV. `production` deploys to the PROD sites
+(Pemogan, then Citarum) over SSH, after approval and outside office hours;
+see "Switching a PROD site" in
+[deploy/server/README.md](../deploy/server/README.md). Until a PROD site has
+switched, it still uses Hostinger's Git deploy. A release is a pull request
+from `main` into `production`.
 
 ## Steps
 
@@ -16,27 +20,35 @@ both PROD sites. A release is a pull request from `main` into `production`.
    which fails unless `VERSION` is higher than the last release tag.
 4. Merge the PR with "Create a merge commit", never squash or rebase, so
    `main` and `production` keep the same history (pick it from the merge
-   button's dropdown; GitHub remembers the last choice). Hostinger pulls the new code to
-   both PROD sites, and the **Release / publish** workflow creates the tag
-   `v<VERSION>` and a GitHub Release listing the PRs included.
-5. If the release includes a migration (any new file in
-   `application/migrations/`), take a database backup of each PROD site
-   first, then open its Migrate URL once (see
-   [DATABASE_CHANGES.md](DATABASE_CHANGES.md)).
+   button's dropdown; GitHub remembers the last choice). The
+   **Release / publish** workflow creates the tag `v<VERSION>` and a GitHub
+   Release listing the PRs included.
+5. **Deploy.** Once Tests passes on `production`, Deploy starts for every
+   PROD site whose `DEPLOY_PROD_<SITE>_ENABLED` variable is `true`
+   (Pemogan first, Citarum only after Pemogan succeeded). Approve each
+   site's job in Actions > Deploy; during office hours (08:00–17:59 WITA, refused from 07:30) it stops with
+   "Office hours: re-run this after 18:00 WITA" and changes nothing, so
+   re-run it in the evening. The deploy takes a database backup, runs the
+   migrations and rolls itself back if anything fails. (A site still on
+   Hostinger's Git deploy: take a database backup first, and if the
+   release includes a migration, open its Migrate URL once, see
+   [DATABASE_CHANGES.md](DATABASE_CHANGES.md).)
 6. Check the footer of each PROD site shows the new version, and click
    through the main pages.
 7. Check each PROD site's `https://<site>/index.php/Health` shows
-   `"outbound":"live"`. WhatsApp (and email) are only sent where
-   `CI_ENV` is exactly `production` ([OUTBOUND_MESSAGES.md](OUTBOUND_MESSAGES.md)).
-   A PROD site showing `"blocked"` silently stops sending invoices: there is
-   no error, only "NOT SENT" in `reminder_tagihan`. Fix it by adding
-   `SetEnv CI_ENV production` to that site's `.htaccess`.
+   `"status":"ok"` and `"outbound":"live"`. WhatsApp (and email) are only
+   sent where `CI_ENV` is exactly `production`
+   ([OUTBOUND_MESSAGES.md](OUTBOUND_MESSAGES.md)). A PROD site showing
+   `"blocked"` silently stops sending invoices: there is no error, only
+   "NOT SENT" in `reminder_tagihan`. Check `SetEnv CI_ENV production` in
+   that site's `deploy/shared/.htaccess` (and `ci_env=production` in its
+   `bin/sites/<site>.conf`; the deploy refuses when they differ).
 
 **Before the first release that contains EHU-0023-6** (the production-only
-gate for WhatsApp/email): check that each PROD site's `.htaccess` already
-has `SetEnv CI_ENV production`, spelled exactly like that. Older code didn't
-depend on it for sending, so a PROD site without it worked until now and
-would stop sending WhatsApp with this release.
+gate for WhatsApp/email): each PROD site's `.htaccess` must have
+`SetEnv CI_ENV production`, spelled exactly like that. Checked on 20 Nov
+2026: both PROD sites already have it. After that release, Health must
+show `"outbound":"live"` on each PROD site (step 7).
 
 ## Which number to bump
 

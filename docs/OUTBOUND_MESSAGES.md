@@ -42,9 +42,10 @@ So that PROD keeps sending:
 The release steps in [RELEASING.md](RELEASING.md) include both checks.
 
 1. **Each PROD site's `.htaccess`** must contain
-   `SetEnv CI_ENV production`. Check: that site's
-   `https://<site>/Health` shows `"outbound":"live"`. A PROD site showing
-   `blocked` sends nothing.
+   `SetEnv CI_ENV production` (with the SSH deploy: `deploy/shared/.htaccess`,
+   matching `ci_env=production` in `bin/sites/<site>.conf`). Both PROD sites
+   had it on 20 Nov 2026. Check: that site's `https://<site>/Health` shows
+   `"outbound":"live"`. A PROD site showing `blocked` sends nothing.
 2. **Any PROD cron job** (none is set up today) must start its command with
    `CI_ENV=production`, e.g.
    `CI_ENV=production php /path/to/index.php Cron` (the controller name is case-sensitive on Linux). Cron runs from the
@@ -75,7 +76,7 @@ DEV must **not** have `CI_ENV production`: it runs with `testing` and shows
 
 ## The SSH deploy
 
-`deploy/server/deploy.sh` (used for DEV) adds three checks of its own; see
+`deploy/server/deploy.sh` (DEV, and each PROD site once switched) adds three checks of its own; see
 `deploy/server/README.md`:
 
 - it refuses to deploy unless `ci_env=` in the site's

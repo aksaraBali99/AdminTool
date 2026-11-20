@@ -34,14 +34,22 @@ printf '# sites the GitHub key may deploy\ndev\n  staging  \n' > "$BIN/sites.all
 pass=0
 fail=0
 
+# The arguments of command= in authorized_keys: none for the DEV key,
+# "prod" for the PROD key. Set with as_key.
+GATE_ARGS=()
+as_key() { # dev | prod | <raw arguments...>
+    if [ "$#" -eq 1 ] && [ "$1" = dev ]; then GATE_ARGS=()
+    else GATE_ARGS=("$@"); fi
+}
+
 run_gate() { # <ssh command or __unset__> -> sets $status
     rm -f "$BIN/called-with" "$BIN/stdin-received" "$BIN/env-received" \
         "$BIN/rollback-called-with" "$BIN/rollback-stdin" "$BIN/rollback-env"
     if [ "$1" = __unset__ ]; then
-        (unset SSH_ORIGINAL_COMMAND; printf 'TARBALL' | "$BIN/gate.sh") > /dev/null 2>&1
+        (unset SSH_ORIGINAL_COMMAND; printf 'TARBALL' | "$BIN/gate.sh" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"}) > /dev/null 2>&1
     else
         printf 'TARBALL' | SSH_ORIGINAL_COMMAND="$1" SSH_CLIENT="203.0.113.9 50000 65002" \
-            DEPLOY_ROOT=/should/not/pass "$BIN/gate.sh" > /dev/null 2>&1
+            DEPLOY_ROOT=/should/not/pass "$BIN/gate.sh" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"} > /dev/null 2>&1
     fi
     status=$?
 }
@@ -176,6 +184,92 @@ fi
 mv "$BIN/sites.allow" "$BIN/sites.allow.off"
 expect_refused "deploy dev abc1234" "everything when sites.allow is missing"
 mv "$BIN/sites.allow.off" "$BIN/sites.allow"
+
+# ------------------------------------------------------------ DEV and PROD keys
+# The PROD key is forced to "gate.sh prod" and reads sites.allow.prod. The
+# site's own bin/sites/<site>.conf is a second lock: the DEV key never
+# reaches a site with ci_env=production, the PROD key only reaches those.
+echo
+echo "DEV and PROD keys"
+mkdir -p "$BIN/sites"
+printf 'domain=admin-dev.example.com\nci_env=testing\n' > "$BIN/sites/dev.conf"
+printf 'domain=adminpemogan.example.com\nci_env=production\n' > "$BIN/sites/pemogan.conf"
+# Windows line endings and spaces must not hide ci_env=production.
+printf 'domain=admincitarum.example.com\r\n  ci_env = production \r\n' > "$BIN/sites/citarum.conf"
+printf '# sites the PROD key may deploy\npemogan\ncitarum\n' > "$BIN/sites.allow.prod"
+
+as_key dev
+expect_accepted "deploy dev abc1234" dev abc1234
+expect_rollback "rollback dev previous code" dev previous code
+expect_refused "deploy pemogan abc1234" "DEV key: pemogan (not in sites.allow)"
+expect_refused "deploy citarum abc1234" "DEV key: citarum (not in sites.allow)"
+expect_refused "rollback pemogan previous code" "DEV key: a rollback of pemogan"
+expect_refused "rollback citarum previous code-db" "DEV key: a rollback of citarum"
+# Added to sites.allow by mistake: their ci_env=production still stops the DEV key.
+cp "$BIN/sites.allow" "$BIN/sites.allow.saved"
+printf 'pemogan\ncitarum\n' >> "$BIN/sites.allow"
+expect_refused "deploy pemogan abc1234" "DEV key: pemogan even when added to sites.allow by mistake"
+expect_refused "deploy citarum abc1234" "DEV key: citarum (CRLF conf) even when added to sites.allow by mistake"
+expect_refused "rollback pemogan previous code" "DEV key: a rollback of pemogan even when in sites.allow"
+if tail -n1 "$BIN/gate.log" | grep -q 'refused (production site (dev))'; then
+    ok "gate.log says why: production site (dev)"
+else
+    not_ok "gate.log says why: production site (dev)"
+fi
+mv "$BIN/sites.allow.saved" "$BIN/sites.allow"
+
+as_key prod
+expect_accepted "deploy pemogan 0123456789ab" pemogan 0123456789ab
+expect_accepted "deploy citarum 0123456789ab" citarum 0123456789ab
+expect_rollback "rollback pemogan previous code" pemogan previous code
+expect_rollback "rollback citarum 0123456789ab code-db" citarum 0123456789ab code-db
+expect_refused "deploy dev abc1234" "PROD key: dev (not in sites.allow.prod)"
+expect_refused "rollback dev previous code" "PROD key: a rollback of dev"
+expect_refused "deploy staging abc1234" "PROD key: a site only in sites.allow"
+expect_refused "bash" "PROD key: a shell"
+expect_refused "deploy pemogan abc1234; id" "PROD key: a ; command"
+# In sites.allow.prod by mistake, but not a production site: refused.
+printf 'dev\n' >> "$BIN/sites.allow.prod"
+expect_refused "deploy dev abc1234" "PROD key: dev even when added to sites.allow.prod by mistake"
+if tail -n1 "$BIN/gate.log" | grep -q 'refused (not a production site (prod))'; then
+    ok "gate.log says why: not a production site (prod)"
+else
+    not_ok "gate.log says why: not a production site (prod)"
+fi
+printf 'pemogan\ncitarum\n' > "$BIN/sites.allow.prod"
+# A PROD site without its conf file: refused (no ci_env=production to check).
+mv "$BIN/sites/pemogan.conf" "$BIN/sites/pemogan.conf.off"
+expect_refused "deploy pemogan abc1234" "PROD key: a site without bin/sites/<site>.conf"
+mv "$BIN/sites/pemogan.conf.off" "$BIN/sites/pemogan.conf"
+# Missing sites.allow.prod: the PROD key reaches nothing, even with
+# sites.allow present.
+mv "$BIN/sites.allow.prod" "$BIN/sites.allow.prod.off"
+expect_refused "deploy pemogan abc1234" "PROD key: everything when sites.allow.prod is missing"
+mv "$BIN/sites.allow.prod.off" "$BIN/sites.allow.prod"
+
+# deploy.sh gets a clean environment with the PROD key too.
+run_gate "deploy pemogan abc1234"
+if grep -q '^DEPLOY_ROOT=' "$BIN/env-received" || grep -q '^SSH_ORIGINAL_COMMAND=' "$BIN/env-received"; then
+    not_ok "PROD key: deploy.sh gets a clean environment"
+else
+    ok "PROD key: deploy.sh gets a clean environment"
+fi
+
+# Only "prod" is a profile; anything else in command= is refused.
+as_key Prod
+expect_refused "deploy pemogan abc1234" "an unknown profile (Prod)"
+as_key staging
+expect_refused "deploy dev abc1234" "an unknown profile (staging)"
+as_key prod extra
+expect_refused "deploy pemogan abc1234" "two profile arguments"
+as_key ""
+expect_refused "deploy dev abc1234" "an empty profile argument"
+if tail -n1 "$BIN/gate.log" | grep -q 'refused (bad profile)'; then
+    ok "gate.log says why: bad profile"
+else
+    not_ok "gate.log says why: bad profile"
+fi
+as_key dev
 
 echo
 echo "$pass passed, $fail failed"

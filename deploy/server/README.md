@@ -7,13 +7,16 @@ work:
 
 | File | Installed as | Role |
 | --- | --- | --- |
-| `gate.sh` | `~/apps/admintool/bin/gate.sh` | The only command AdminTool's GitHub key may run. Accepts exactly `deploy <site> <release-id>` or `rollback <site> <release-id\|previous> <code\|code-db>`, for sites listed in `sites.allow` next to it. Logs anything else to `gate.log` next to it and refuses it. |
+| `gate.sh` | `~/apps/admintool/bin/gate.sh` | The only command AdminTool's GitHub keys may run. Accepts exactly `deploy <site> <release-id>` or `rollback <site> <release-id\|previous> <code\|code-db>`: with the DEV key (no profile) for sites in `sites.allow` next to it, never one whose `ci_env` is `production`; with the PROD key (`gate.sh prod`) only for sites in `sites.allow.prod` whose `ci_env` is `production`. Logs anything else to `gate.log` next to it and refuses it. |
 | `deploy.sh` | `~/apps/admintool/bin/deploy.sh` | Unpacks the release and deploys it, rolling back by itself if anything fails. |
 | `rollback.sh` | `~/apps/admintool/bin/rollback.sh` | Rolls the live release back to a kept one, by hand (see "Rolling back a live release"). |
 | `deploy-lib.sh` | `~/apps/admintool/bin/deploy-lib.sh` | Helpers both scripts load: logging and masking, the site checks, backups and restore, the switch, the Health check. Never run on its own. |
 
-Only DEV (`dev`, admin-dev.englishhubbali.com) uses this for now. The PROD
-sites still use Hostinger's Git deploy.
+DEV (`dev`, admin-dev.englishhubbali.com) uses this. The PROD sites
+(`pemogan`, adminpemogan.englishhubbali.com, then `citarum`,
+admincitarum.englishhubbali.com) switch to it one at a time, as described in
+"Switching a PROD site"; until a site has switched, it still uses
+Hostinger's Git deploy.
 
 ## Where things are on the server
 
@@ -27,10 +30,13 @@ Two kinds of folders:
 ```
 ~/apps/admintool/                     one folder per app
     bin/                              gate.sh, deploy.sh, rollback.sh (mode 700),
-                                      deploy-lib.sh (mode 600), sites.allow, gate.log
+                                      deploy-lib.sh (mode 600), gate.log,
+                                      sites.allow (DEV key), sites.allow.prod (PROD key)
         sites/dev.conf                domain=admin-dev.englishhubbali.com
                                       ci_env=testing
-    backups/dev/                      pre-deploy-<UTC time>-<id>.sql.gz
+        sites/pemogan.conf            domain=adminpemogan.englishhubbali.com
+                                      ci_env=production   (citarum.conf the same way)
+    backups/<site>/                   pre-deploy-<UTC time>-<id>.sql.gz
                                       (mode 600; the newest 5 are kept)
                                       pre-rollback-<UTC time>-<id>.sql.gz
                                       (mode 600; never deleted automatically)
@@ -279,6 +285,193 @@ Example for AdminTool's `dev` site. `<user>` is the SSH user
    Disable workflow. Or, on the server, remove the key's line from
    `~/.ssh/authorized_keys`.
 
+## Switching a PROD site
+
+PROD deploys run from the `production` branch (a release PR from `main`
+into `production`, see `docs/RELEASING.md`). Pemogan switches first,
+Citarum on a later evening. Never print `.htaccess` values or keys while
+doing this: names and set/not set only.
+
+How the PROD part of `.github/workflows/deploy.yml` works:
+
+- After **Tests** passes for a push to `production`, the job `prod-relay`
+  starts **Deploy** again on `production` with the tested commit (a run
+  started by Tests always carries `main` as its branch, which the PROD
+  environments refuse). It only does so for the sites whose repository
+  variable `DEPLOY_PROD_PEMOGAN_ENABLED` / `DEPLOY_PROD_CITARUM_ENABLED` is
+  `true`; the others are listed as skipped in its summary.
+- By hand: Actions > Deploy > Run workflow, "Use workflow from"
+  `production`, `prod_sites` = `pemogan`, `citarum` or
+  `pemogan then citarum`, `sha` empty (the tip of `production`). The
+  variables don't matter for manual runs.
+- Each site's job (`deploy-site.yml`) runs in its environment
+  (`prod-pemogan`, `prod-citarum`): it waits for approval, then **stops
+  during office hours** (08:00–17:59 WITA, refused from 07:30 so a deploy
+  can't run into them) with "Office hours: re-run this after 18:00 WITA",
+  before connecting. It checks out and deploys exactly the commit it was
+  given, and only while that commit is still the tip of `production`: an
+  older commit (a Tests run that finished late or was re-run) never
+  replaces a newer release. Citarum runs only after Pemogan succeeded when
+  both are chosen.
+- A manual run from `main` with `prod_sites` other than `none (DEV run)`,
+  or with `sha` set, stops instead of deploying DEV.
+- Concurrency: one deploy per site at a time (`deploy-<site>`), one
+  rollback per site at a time (`rollback-<site>`); a running one is never
+  cancelled. Rollbacks have their own group because GitHub keeps only one
+  waiting run per group, so a newly queued deploy would cancel a waiting
+  emergency rollback. If a deploy and a rollback of one site reach the
+  server at the same time, the server's lock refuses the second ("Another
+  deploy of <site> is running") without changing anything; re-run it.
+
+### Once, before the first PROD site
+
+1. **`gate.sh` with profiles** installed on the server (see "Updating the
+   server scripts"), refusal tests re-run.
+2. **The PROD key.** A new ed25519 key pair with no passphrase, only for
+   AdminTool's PROD deploys (e.g. `admintool_github_actions_deploy_prod`),
+   added to `~/.ssh/authorized_keys` by hand on one line:
+
+   ```
+   command="/home/<user>/apps/admintool/bin/gate.sh prod",restrict ssh-ed25519 AAAA... admintool-github-actions-deploy-prod
+   ```
+
+   It reads `sites.allow.prod`, and only reaches sites whose
+   `bin/sites/<site>.conf` says `ci_env=production`; the DEV key never
+   reaches those, even if one is added to `sites.allow` by mistake.
+   Create an empty `sites.allow.prod` (mode 600) for now. Refusal tests
+   with both keys: DEV key `deploy pemogan x` and `deploy citarum x`
+   refused; PROD key `deploy dev x`, `bash` and `deploy pemogan x`
+   refused (not in `sites.allow.prod` yet); each in `gate.log`.
+3. **GitHub environments** `prod-pemogan` and `prod-citarum` (Settings >
+   Environments), each with:
+   - Required reviewers: `aksaraBali99`. Leave "Prevent self-review" off:
+     the person who starts a run must be able to approve it.
+   - Deployment branches and tags: selected branches, `production` only.
+   - Secrets: `DEPLOY_SSH_KEY` (the PROD private key, whole file),
+     `DEPLOY_HOST`, `DEPLOY_PORT`, `DEPLOY_USER`, `DEPLOY_KNOWN_HOSTS` (same
+     values as in `dev`).
+4. **Repository variables** `DEPLOY_PROD_PEMOGAN_ENABLED` and
+   `DEPLOY_PROD_CITARUM_ENABLED`: leave them unset until a site is
+   accepted (below).
+5. **Turn off Hostinger's Git auto-deploy on both PROD sites** (hPanel >
+   the site > Git) **before the release merge** from `main` into
+   `production`, even for the site that isn't switched that evening.
+   Otherwise Hostinger pulls the new code into the other site's
+   `public_html` without running its migrations, and into the switched
+   site's release folder through the `public_html` link. Until its own
+   switch, the other site simply stays on the code it has.
+6. **The release merge** (`docs/RELEASING.md`). Its Tests run starts
+   `prod-relay`, which starts nothing while both variables are unset.
+
+### Each site, on its evening (after 18:00 WITA)
+
+Example for Pemogan; for Citarum use `admincitarum.englishhubbali.com` and
+`citarum`.
+
+1. **App folder:**
+
+   ```sh
+   echo pemogan >> ~/apps/admintool/bin/sites.allow.prod
+   printf 'domain=adminpemogan.englishhubbali.com\nci_env=production\n' > ~/apps/admintool/bin/sites/pemogan.conf
+   chmod 600 ~/apps/admintool/bin/sites/pemogan.conf
+   D=~/domains/adminpemogan.englishhubbali.com
+   mkdir -p ~/apps/admintool/backups/pemogan "$D/deploy/releases" "$D/deploy/shared" "$D/deploy/logs"
+   chmod 700 ~/apps/admintool/backups/pemogan "$D/deploy/logs"
+   ```
+
+2. **Shared `.htaccess`**, from the site's current one:
+
+   ```sh
+   D=~/domains/adminpemogan.englishhubbali.com
+   H="$D/deploy/shared/.htaccess"
+   cp -p "$D/public_html/.htaccess" "$H"
+   chmod 644 "$H"
+   # Drop MIGRATE_TOKEN (the deploy runs migrations; without it the
+   # Migrate URL is closed) and Pemogan's stray "htaccess:" line.
+   sed -i -e '/^[[:space:]]*SetEnv[[:space:]]\{1,\}MIGRATE_TOKEN\([[:space:]]\|$\)/d' \
+          -e '/^[[:space:]]*htaccess:/d' "$H"
+   echo "SetEnv MAINTENANCE_FILE $D/deploy/shared/maintenance.on" >> "$H"
+   # Check, names only:
+   awk 'tolower($1)=="setenv" {print $2}' "$H" | sort | tr '\n' ' '; echo
+   awk 'tolower($1)=="setenv" && $2=="CI_ENV" {v=$3} END {print (v=="production" ? "CI_ENV is production" : "CI_ENV is NOT production")}' "$H"
+   grep -c '^[[:space:]]*htaccess:' "$H"
+   ```
+
+   Expect the names `CI_ENV DB_HOST DB_NAME DB_PASS DB_USER MAINTENANCE_FILE`
+   (no `MIGRATE_TOKEN`), "CI_ENV is production" and `0`.
+   **`SetEnv CI_ENV production` is already there on both sites**
+   (preflight, 20 Nov 2026): check it, don't add it. It must match
+   `ci_env=production` in `bin/sites/<site>.conf`, or the deploy refuses.
+
+3. **Uploads:** make sure nobody is entering data, then **copy the uploads
+   right before the deploy**, untracked files
+   included (Pemogan has files in `uploads/` that aren't in Git; `cp -a`
+   copies everything):
+
+   ```sh
+   D=~/domains/adminpemogan.englishhubbali.com
+   cp -a "$D/public_html/uploads" "$D/deploy/shared/uploads"
+   find "$D/public_html/uploads" -type f | wc -l; find "$D/deploy/shared/uploads" -type f | wc -l
+   ```
+
+   The two counts must be equal (preflight: Pemogan 4 files, Citarum 2).
+
+4. **First deploy:** Actions > Deploy > Run workflow, "Use workflow from"
+   `production`, `prod_sites` = `pemogan`, `sha` empty; approve the
+   `prod-pemogan` job. `public_html` (a real folder with Hostinger's Git
+   checkout) is moved to `deploy/public_html.pre-deploy` and replaced by a
+   link; if anything fails, the old folder comes back and the database is
+   restored (tested in `deploy-test.sh` sections 1 and 1b).
+   Afterwards, `diff -rq "$D/deploy/public_html.pre-deploy/uploads" "$D/deploy/shared/uploads"`
+   must print nothing (no upload landed between the copy and the deploy).
+
+### Accepting a PROD site
+
+A PROD site counts as switched when all of these pass:
+
+| Check | How | Must show |
+| --- | --- | --- |
+| First deploy | the run above | green, `success` in the summary |
+| Re-run | run the same Deploy again (same commit) | green, `already-live`, nothing changed |
+| Health | `https://<domain>/index.php/Health` | `"status":"ok"`, `"version"` = `VERSION` of the release, `"revision"` = its full commit sha, `"migrations":"ok"`, `"outbound":"live"` |
+| Backup | on the server: `ls -l ~/apps/admintool/backups/<site>/` and `gunzip -t <the pre-deploy file>` | a `pre-deploy-…-<release>.sql.gz`, mode 600, `gunzip -t` silent with exit 0 |
+
+There is no separate WhatsApp test: Health's `"outbound":"live"` (which the
+deploy itself also requires on a `ci_env=production` site) shows the app
+runs as production, where WhatsApp and email are sent.
+
+**Why these checks and not C1–C3 / R1–R4 on PROD:** PROD runs the same
+`gate.sh`, `deploy.sh`, `rollback.sh` and `deploy-lib.sh` as DEV, where C1–C3
+and R1–R4 passed (see "Record: deploy drills, DEV, 19 Nov 2026" and
+"Record: rollback drills, DEV, 19 Nov 2026"), and the CI tests cover the
+first deploy onto a real folder failing and rolling back. The drills
+themselves need broken commits (a failing migration, a wrong revision) to
+be deployed, which on PROD means putting them on `production`, the branch
+that should only ever hold released code.
+
+Once a site passes: set its repository variable
+(`DEPLOY_PROD_PEMOGAN_ENABLED` or `DEPLOY_PROD_CITARUM_ENABLED`) to `true`.
+From then on, each release merge deploys it automatically, after approval
+and outside office hours.
+
+**At the next real release, on a quiet evening, once per site:** drill R1
+on PROD: Rollback, site `<site>`, `code only`, release empty (back to the
+previous release), check Health shows the previous commit; then Rollback
+again, `code only`, release = the release id just rolled back from (forward
+again), check Health. After that, delete the site's
+`deploy/public_html.pre-deploy`.
+
+### Clean-up later (not on the switch evening)
+
+Each only after asking, and after checking nothing in it is needed:
+
+- `~/domains/<domain>/old_site_20261030/` on both sites;
+- `~/domains/admincitarum.englishhubbali.com/public_html.zip` (outside
+  `public_html`, not reachable from the web);
+- `~/domains/<domain>/.trash` on both sites;
+- `~/apps/admintool/bin/sites/dev.conf.bak-20261119`;
+- `deploy/public_html.pre-deploy` after R1 (above).
+
 ## Logs
 
 - `~/domains/<domain>/deploy/logs/deploy.log`: every step, e.g.
@@ -307,18 +500,26 @@ or an invalid domain in it) is only in the Actions log.
 
 When a release is live but turns out to be broken, roll back to the release
 before it: **Actions > Rollback > Run workflow**, "Use workflow from"
-`main`:
+`main` for `dev`, `production` for `pemogan` or `citarum`:
 
 | Input | What to enter |
 | --- | --- |
-| site | `dev` |
+| site | `dev`, `pemogan` or `citarum` |
 | type | `code only`, or `code and database` (see below) |
 | release | leave empty for the previous release, or a release id from a Deploy summary (any release still on the server, `code only`) |
-| confirm | `dev` again; anything else stops the run before it connects |
+| confirm | the site name again; anything else stops the run before it connects |
 
-It runs `rollback.sh` on the server, which shares the deploy lock (a
-rollback and a deploy never overlap, and the workflow waits for a running
-deploy). The steps: checks, maintenance on, (database), switch `current`,
+A PROD rollback runs in the site's `prod-<site>` environment: it waits for
+the required reviewer's approval and uses the PROD key. It has no
+office-hours block (a rollback is an emergency fix).
+
+Rollbacks have their own concurrency group (`rollback-<site>`), not
+Deploy's, so a deploy queued later can never cancel a waiting rollback.
+`rollback.sh` shares the deploy lock on the server: a rollback and a deploy
+never overlap, and whichever comes second is refused ("Another deploy of
+<site> is running") without changing anything. If a deploy is running,
+wait for it to finish (or check it in Actions), then run the rollback. The
+steps: checks, maintenance on, (database), switch `current`,
 PHP restart, Health with the target's `VERSION`, `REVISION` and `outbound`,
 maintenance off.
 
@@ -456,10 +657,18 @@ on a site without it. After any merge that changes `deploy/server/deploy.sh` or
    the installed sha256 once more.
 6. Delete the backup once the next deploy has worked.
 
-`gate.sh` is what the GitHub key runs, so a change to it takes effect on the
+`gate.sh` is what the GitHub keys run, so a change to it takes effect on the
 next SSH connection. After replacing it, re-run the refusal tests (no
 command, `bash`, `deploy <site> ../x`, `deploy <a site not in sites.allow> x`)
-with the deploy key and check they appear in `bin/gate.log`.
+with the deploy key and check they appear in `bin/gate.log`. Once the PROD
+key exists, also: the DEV key refused for `deploy pemogan x` and
+`deploy citarum x`, the PROD key refused for `deploy dev x` and `bash`.
+
+**The change that added the PROD key profile (EHU-0023-7)** changes
+`gate.sh` only. Install it as above **before** adding the PROD key to
+`authorized_keys`: the old `gate.sh` ignores the `prod` argument and would
+read `sites.allow`. With the new one and no `sites.allow.prod` yet, the
+PROD key reaches nothing. The DEV key keeps working unchanged.
 
 To see whether the installed scripts are current, compare their sha256 with
 the files on `main`.
@@ -513,8 +722,11 @@ If the Hostinger deploy fails, go back to the copy:
 
 Afterwards:
 
-1. Remove the deploy key's line from `~/.ssh/authorized_keys` and the site
-   from `~/apps/<app>/bin/sites.allow` and `bin/sites/<site>.conf`.
+1. Remove the site from `~/apps/<app>/bin/sites.allow` (`sites.allow.prod`
+   for a PROD site) and `bin/sites/<site>.conf`; remove the deploy key's
+   line from `~/.ssh/authorized_keys` once no site uses that key. For a
+   PROD site, also set its `DEPLOY_PROD_*_ENABLED` variable off and turn
+   Hostinger's Git auto-deploy back on.
 2. Delete `public_html.copy`, `deploy/` and `~/apps/<app>/backups/<site>/`
    once nothing in them is needed.
 
@@ -551,9 +763,11 @@ If people use the site during the drills, a checksum can differ because of
 their changes; compare with the backup the drill's deploy took instead. See
 also "Known issues" for `tagihan`.
 
-**Every PROD site must pass C1, C2, C3 and R1–R4 before it switches from
-Hostinger's Git deploy to this one.** On PROD the drills touch real users
-and real data, so:
+**PROD sites don't run C1–C3 or R2–R4.** They switch after the acceptance
+checks in "Accepting a PROD site" (same scripts as DEV, where all drills
+passed; the drills would put broken commits on `production`), plus R1 once
+per site at the next real release. If a drill is ever needed on PROD
+anyway, the drills touch real users and real data, so:
 
 - run them at a quiet time and announce them: C2, C3 and the rollback
   drills show the maintenance page, C3 and R4 for about 3 minutes;
@@ -572,9 +786,9 @@ and real data, so:
   some `tagihan.tipe` values are stored (see "Known issues"); expect that in
   the comparison.
 
-After all drills (C1–C3 and R1–R4) pass on a site, delete its
-`deploy/public_html.pre-deploy`; from then on, going back works as described
-in "Going back to Hostinger's Git deploy".
+After all drills (C1–C3 and R1–R4) pass on DEV, or the acceptance checks
+and R1 on a PROD site, delete its `deploy/public_html.pre-deploy`; from then
+on, going back works as described in "Going back to Hostinger's Git deploy".
 
 ### Record: deploy drills, DEV, 19 Nov 2026
 
@@ -626,7 +840,7 @@ first).
   `tagihan.tipe` is `enum('Biaya Kelas','Biaya Registrasi','Biaya Buku','')`.
   For invoices with mixed item types the app writes a combined value (e.g.
   "Biaya Kelas, Biaya Buku"), which isn't one of the options; DEV's database
-  runs without strict SQL mode (PROD's probably too; not checked), and the
+  runs without strict SQL mode (PROD's too: `NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION`, checked 20 Nov 2026), and the
   app sets `stricton => FALSE`, so it stores MySQL's error value (index 0,
   shown as `''`). A dump writes it as `''`, so after a restore it is the
   real `''` option (index 4). The page looks the same and `WHERE tipe = ''`
@@ -637,7 +851,8 @@ first).
 
 ## Tests
 
-- `bash tests/deploy/gate-test.sh`: which SSH commands `gate.sh` accepts.
+- `bash tests/deploy/gate-test.sh`: which SSH commands `gate.sh` accepts,
+  with the DEV key and with the PROD key (`gate.sh prod`).
   Plain bash, runs anywhere, including Git Bash on Windows.
 - `bash tests/deploy/deploy-test.sh`: real deploys, automatic and manual (`rollback.sh`) rollbacks, and refusals
   against a scratch database and a `php -S` site, laid out as above. Linux

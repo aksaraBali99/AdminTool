@@ -214,6 +214,27 @@ class Migration_First_broken extends CI_Migration
 }
 EOF
 variant first-broken 29991231000002_first_broken.php
+# For 1b: a first deploy whose migration works and changes existing data,
+# and whose Health then never answers ok (it reports another commit), so the
+# deploy fails after the switch to the new release.
+cat > "$WORK/29991231000009_first_changes_data.php" <<'EOF'
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+class Migration_First_changes_data extends CI_Migration
+{
+    public function up()
+    {
+        $this->db->query("CREATE TABLE first_deploy_tmp (id int)");
+        $this->db->query("UPDATE data_konfig SET nama_apk = 'changed by 1b' WHERE id_konfig = 0");
+    }
+    public function down() {}
+}
+EOF
+variant first-health-fails 29991231000009_first_changes_data.php
+sed -i "s/'revision' => \$this->app_revision(),/'revision' => str_repeat('0', 40),/" \
+    "$WORK/variant-first-health-fails/application/controllers/Health.php"
+grep -q "str_repeat('0', 40)" "$WORK/variant-first-health-fails/application/controllers/Health.php"
+tar -czf "$WORK/first-health-fails.tar.gz" -C "$WORK/variant-first-health-fails" .
 variant probe 29991231000000_deploy_probe.php
 variant broken 29991231000000_deploy_probe.php 29991231000001_deploy_broken.php
 # Same code as "probe", but its Health reports another commit than the one
@@ -341,6 +362,31 @@ check "the failed release folder is removed" '[ ! -e "$SITE_DIR/releases/first-b
 check "the table the migration added is gone" '! table_exists deploy_broken_tmp'
 check "the migration version is unchanged" '[ "$(sql '\''SELECT version FROM migrations'\'')" = "$BASE_VERSION" ]'
 check "maintenance is off" '[ ! -e "$MAINT" ]'
+
+# --------------------------------------------------------------- 1b. first deploy fails after the switch
+# The PROD sites' first deploy: public_html is a real folder. Migrations run
+# and change data, the new release goes live, then Health fails. The old
+# folder must come back AND the database must be as before.
+echo
+echo "1b. First deploy that changes data, then fails Health after the switch"
+nama_apk() { sql 'SELECT nama_apk FROM data_konfig WHERE id_konfig = 0'; }
+nama_before="$(nama_apk)"
+token_before="$(token_wa)"
+deploy first-health-fails "$WORK/first-health-fails.tar.gz"
+check "exits non-zero" '[ "$rc" -ne 0 ]'
+check "reports rolled-back" 'result_is first-health-fails rolled-back'
+check "...after the migration ran and the new release went live" 'grep -q "d. Migrations done" <<< "$out" && grep -q "b. public_html moved to" <<< "$out"'
+check "...and Health failed (not an earlier step)" 'grep -q "FAILED during step '\''health'\''" <<< "$out"'
+check "public_html is the original folder again" '[ -d "$PUBLIC_HTML" ] && [ ! -L "$PUBLIC_HTML" ]'
+check "the old site answers again" '[ "$(curl -s "$SITE_URL/")" = "OLD SITE" ]'
+check "no current link, no pre-deploy folder left" '[ ! -e "$SITE_DIR/current" ] && [ ! -L "$SITE_DIR/current" ] && [ ! -e "$SITE_DIR/public_html.pre-deploy" ]'
+check "the failed release folder is removed" '[ ! -e "$SITE_DIR/releases/first-health-fails" ]'
+check "the data the migration changed is restored" '[ "$(nama_apk)" = "$nama_before" ]'
+check "the WhatsApp token is as before the deploy (overwritten, then restored)" '[ "$(token_wa)" = "$token_before" ] && grep -q "d. WhatsApp token in data_konfig set to DISABLED-NON-PROD" <<< "$out"'
+check "the table the migration added is gone" '! table_exists first_deploy_tmp'
+check "the migration version is unchanged" '[ "$(sql '\''SELECT version FROM migrations'\'')" = "$BASE_VERSION" ]'
+check "maintenance is off" '[ ! -e "$MAINT" ]'
+check "history.log has a rolled-back line with no previous release" 'grep -q " site=dev release=first-health-fails .* previous=- result=rolled-back\$" "$SITE_DIR/logs/history.log"'
 
 # --------------------------------------------------------------- 2. first deploy
 echo
