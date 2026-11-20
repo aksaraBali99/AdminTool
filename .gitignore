@@ -29,6 +29,10 @@ application/config/database.local.php
 # on disk rather than sharing one tracked file.
 .htaccess
 
+# Maintenance-mode switch, created and removed by the deploy (see
+# docs/HEALTH_AND_MAINTENANCE.md). Never commit it: it would take the site down.
+maintenance.on
+
 # Composer dependencies (installed via `composer install`)
 vendor/
 
@@ -38,9 +42,14 @@ vendor/
 # Session files written by the test harness's throwaway PHP server
 # (tests/run-tests.sh, tests/serve-test-app.sh)
 tests/.session-tmp/
+tests/.maintenance-tmp/
+tests/.fonnte-stub-tmp/
 
 # Playwright (e2e/) - npm dependencies and run artifacts
 e2e/node_modules/
 e2e/test-results/
 e2e/playwright-report/
 e2e/.cache/
+
+# Written into release builds by deploy/build-release.sh; never commit one.
+/REVISION

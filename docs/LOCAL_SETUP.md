@@ -356,6 +356,16 @@ Then visit **https://admintool.test/** — you should land on the login page
 with no PHP notices above it. Log in with a user from the `user` table in
 your imported database.
 
+**No WhatsApp or email is ever sent from a local copy.** Messages only go
+out with `CI_ENV=production` (see [OUTBOUND_MESSAGES.md](OUTBOUND_MESSAGES.md)),
+and the vhost above uses `testing`. Sending an invoice locally still works
+and is logged in `reminder_tagihan`, with "NOT SENT (testing): WhatsApp is
+blocked outside production" instead of a real send, even with an imported
+database whose `data_konfig.token_wa` holds a real token.
+`https://admintool.test/Health` shows `"outbound":"blocked"`. Don't set
+`CI_ENV production` locally to "test sending": that is exactly what would
+message real students from a copy of their data.
+
 ## Known issues
 
 - **PHPExcel / TCPDF exports — verified working on PHP 8.3.** The app

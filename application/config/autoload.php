@@ -90,7 +90,8 @@ $autoload['drivers'] = array();
 |
 |	$autoload['helper'] = array('url', 'file');
 */
-$autoload['helper'] = array('url','custom_helper'); 
+// outbound: the production-only gate for WhatsApp/email (sendWa() needs it).
+$autoload['helper'] = array('url','custom_helper','outbound'); 
 /*
 | -------------------------------------------------------------------
 |  Auto-load Config files

@@ -56,10 +56,39 @@ if command -v cygpath >/dev/null 2>&1; then
     SESSION_SAVE_PATH="$(cygpath -w "$SESSION_SAVE_PATH")"
 fi
 
+# Maintenance switch outside the app folder, the way a deployed site sets it
+# (SetEnv MAINTENANCE_FILE in its shared .htaccess). tests/Health uses it.
+MAINTENANCE_DIR="$(pwd)/tests/.maintenance-tmp"
+rm -rf "$MAINTENANCE_DIR"
+mkdir -p "$MAINTENANCE_DIR"
+if command -v cygpath >/dev/null 2>&1; then
+    MAINTENANCE_DIR="$(cygpath -w "$MAINTENANCE_DIR")"
+fi
+export MAINTENANCE_FILE="$MAINTENANCE_DIR/maintenance.on"
+
+# A stand-in for Fonnte (WhatsApp) that only records hits. Outside production
+# the app never sends (application/helpers/outbound_helper.php), but if that
+# gate were ever bypassed, OUTBOUND_FONNTE_URL makes the request land here
+# instead of at Fonnte, and tests/Outbound counts the hits. Exported before
+# the app server starts, so the app sees it.
+STUB_PORT=8098
+FONNTE_STUB_DIR="$(pwd)/tests/.fonnte-stub-tmp"
+rm -rf "$FONNTE_STUB_DIR"
+mkdir -p "$FONNTE_STUB_DIR"
+if command -v cygpath >/dev/null 2>&1; then
+    FONNTE_STUB_DIR="$(cygpath -w "$FONNTE_STUB_DIR")"
+fi
+export FONNTE_STUB_HITS="$FONNTE_STUB_DIR/hits.log"
+export OUTBOUND_FONNTE_URL="http://$HOST:$STUB_PORT/send"
+
+echo "Starting the Fonnte stub at http://$HOST:$STUB_PORT ..."
+"$PHP_BIN" -S "$HOST:$STUB_PORT" tests/stubs/fonnte-stub.php >/tmp/admintool-fonnte-stub.log 2>&1 &
+STUB_PID=$!
+
 echo "Starting throwaway PHP server at $ADMINTOOL_BASE_URL ..."
 "$PHP_BIN" -d session.save_path="$SESSION_SAVE_PATH" -S "$HOST:$PORT" -t . tests/router.php >/tmp/admintool-test-server.log 2>&1 &
 SERVER_PID=$!
-trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+trap 'kill $SERVER_PID $STUB_PID 2>/dev/null || true' EXIT
 
 for i in $(seq 1 20); do
     if curl -s -o /dev/null "$ADMINTOOL_BASE_URL/index.php/Login"; then

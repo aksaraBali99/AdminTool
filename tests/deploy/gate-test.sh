@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+# Tests for deploy/server/gate.sh, the forced command of the GitHub deploy key:
+# which SSH commands it accepts and passes on to deploy.sh, and which it
+# refuses and logs. Plain bash, no server, no database:
+#
+#   bash tests/deploy/gate-test.sh
+#
+# gate.sh is copied into a temporary bin folder next to stub deploy.sh and
+# rollback.sh scripts that record their arguments, stdin and environment.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+BIN="$WORK/bin"
+mkdir -p "$BIN"
+cp "$REPO/deploy/server/gate.sh" "$BIN/gate.sh"
+cat > "$BIN/deploy.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$@" > "$(dirname "$0")/called-with"
+cat > "$(dirname "$0")/stdin-received"
+env > "$(dirname "$0")/env-received"
+EOF
+cat > "$BIN/rollback.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$@" > "$(dirname "$0")/rollback-called-with"
+cat > "$(dirname "$0")/rollback-stdin"
+env > "$(dirname "$0")/rollback-env"
+EOF
+chmod +x "$BIN/gate.sh" "$BIN/deploy.sh" "$BIN/rollback.sh"
+printf '# sites the GitHub key may deploy\ndev\n  staging  \n' > "$BIN/sites.allow"
+
+pass=0
+fail=0
+
+# The arguments of command= in authorized_keys: none for the DEV key,
+# "prod" for the PROD key. Set with as_key.
+GATE_ARGS=()
+as_key() { # dev | prod | <raw arguments...>
+    if [ "$#" -eq 1 ] && [ "$1" = dev ]; then GATE_ARGS=()
+    else GATE_ARGS=("$@"); fi
+}
+
+run_gate() { # <ssh command or __unset__> -> sets $status
+    rm -f "$BIN/called-with" "$BIN/stdin-received" "$BIN/env-received" \
+        "$BIN/rollback-called-with" "$BIN/rollback-stdin" "$BIN/rollback-env"
+    if [ "$1" = __unset__ ]; then
+        (unset SSH_ORIGINAL_COMMAND; printf 'TARBALL' | "$BIN/gate.sh" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"}) > /dev/null 2>&1
+    else
+        printf 'TARBALL' | SSH_ORIGINAL_COMMAND="$1" SSH_CLIENT="203.0.113.9 50000 65002" \
+            DEPLOY_ROOT=/should/not/pass "$BIN/gate.sh" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"} > /dev/null 2>&1
+    fi
+    status=$?
+}
+
+ok() { pass=$((pass + 1)); echo "ok   - $1"; }
+not_ok() { fail=$((fail + 1)); echo "FAIL - $1"; }
+
+expect_accepted() { # <command> <site> <release>
+    run_gate "$1"
+    if [ "$status" -eq 0 ] && [ -f "$BIN/called-with" ] \
+        && [ "$(cat "$BIN/called-with")" = "$(printf '%s\n%s' "$2" "$3")" ] \
+        && [ "$(cat "$BIN/stdin-received")" = TARBALL ]; then
+        ok "accepts: $1"
+    else
+        not_ok "accepts: $1 (exit $status)"
+    fi
+}
+
+expect_refused() { # <command> <description>
+    local lines_before lines_after
+    lines_before="$({ wc -l < "$BIN/gate.log"; } 2>/dev/null || echo 0)"
+    run_gate "$1"
+    lines_after="$({ wc -l < "$BIN/gate.log"; } 2>/dev/null || echo 0)"
+    if [ "$status" -eq 1 ] && [ ! -f "$BIN/called-with" ] && [ ! -f "$BIN/rollback-called-with" ] \
+        && [ "$lines_after" -gt "$lines_before" ]; then
+        ok "refuses $2"
+    else
+        not_ok "refuses $2 (exit $status, deploy.sh called: $([ -f "$BIN/called-with" ] && echo yes || echo no), rollback.sh called: $([ -f "$BIN/rollback-called-with" ] && echo yes || echo no))"
+    fi
+}
+
+expect_rollback() { # <command> <site> <release> <type>
+    run_gate "$1"
+    if [ "$status" -eq 0 ] && [ ! -f "$BIN/called-with" ] && [ -f "$BIN/rollback-called-with" ] \
+        && [ "$(cat "$BIN/rollback-called-with")" = "$(printf '%s\n%s\n%s' "$2" "$3" "$4")" ] \
+        && [ ! -s "$BIN/rollback-stdin" ]; then
+        ok "accepts: $1 (rollback.sh, nothing on stdin)"
+    else
+        not_ok "accepts: $1 (exit $status)"
+    fi
+}
+
+# Accepted
+expect_accepted "deploy dev abc1234" dev abc1234
+expect_accepted "deploy dev 0123456789ab" dev 0123456789ab
+expect_accepted "deploy dev v1.2.3_rc-1" dev v1.2.3_rc-1
+expect_accepted "deploy dev $(printf 'a%.0s' {1..64})" dev "$(printf 'a%.0s' {1..64})"
+expect_accepted "deploy staging abc1234" staging abc1234
+
+# Refused
+expect_refused __unset__ "no command (interactive login)"
+expect_refused "" "an empty command"
+expect_refused "bash" "a shell"
+expect_refused "deploy dev" "a missing release id"
+expect_refused "deploy" "a missing site"
+expect_refused "deploy prod abc1234" "a site not in sites.allow"
+expect_refused "deploy Dev abc1234" "a site in the wrong case"
+expect_refused "deploy de abc1234" "a partial site name"
+expect_refused "deploy # abc1234" "a comment as site"
+expect_refused "deploy dev abc1234 extra" "an extra argument"
+expect_refused "deploy  dev abc1234" "a double space"
+expect_refused " deploy dev abc1234" "a leading space"
+expect_refused "deploy dev abc1234 " "a trailing space"
+expect_refused "$(printf 'deploy\tdev\tabc1234')" "tabs"
+expect_refused "$(printf 'deploy dev abc1234\nrm -rf ~')" "a second line"
+expect_refused "deploy dev abc1234; rm -rf ~" "a ; command"
+expect_refused 'deploy dev $(id)' "command substitution"
+expect_refused "deploy dev ../../etc" "a path in the release id"
+expect_refused "deploy dev .." "'..' as release id"
+expect_refused "deploy dev ." "'.' as release id"
+expect_refused "deploy dev .hidden" "a release id starting with a dot"
+expect_refused "deploy dev -rf" "a release id starting with a dash"
+expect_refused "deploy dev a/b" "a slash in the release id"
+expect_refused "deploy dev $(printf 'a%.0s' {1..65})" "a 65-character release id"
+expect_refused "deploy ../dev abc1234" "a path as site"
+expect_refused "undeploy dev abc1234" "another verb"
+
+# Rollback: exactly "rollback <site> <release-id|previous> <code|code-db>"
+expect_rollback "rollback dev previous code" dev previous code
+expect_rollback "rollback dev previous code-db" dev previous code-db
+expect_rollback "rollback dev 0123456789ab code" dev 0123456789ab code
+expect_rollback "rollback staging abc1234 code-db" staging abc1234 code-db
+expect_refused "rollback dev abc1234" "a rollback without a type"
+expect_refused "rollback dev" "a rollback without release and type"
+expect_refused "rollback dev previous both" "an unknown rollback type"
+expect_refused "rollback dev previous CODE" "a rollback type in the wrong case"
+expect_refused "rollback dev previous code extra" "an extra rollback argument"
+expect_refused "rollback dev previous  code" "a double space in a rollback"
+expect_refused "rollback dev previous code " "a trailing space in a rollback"
+expect_refused "$(printf 'rollback\tdev\tprevious\tcode')" "tabs in a rollback"
+expect_refused "$(printf 'rollback dev previous code\nid')" "a second line after a rollback"
+expect_refused "rollback dev previous code;id" "a ; after the rollback type"
+expect_refused "rollback prod previous code" "a rollback of a site not in sites.allow"
+expect_refused "rollback dev ../x code" "a path as rollback target"
+expect_refused "rollback dev .hidden code" "a rollback target starting with a dot"
+expect_refused "rollback dev -x code-db" "a rollback target starting with a dash"
+expect_refused 'rollback dev $(id) code' "command substitution in a rollback"
+expect_refused "scp -t /home" "scp"
+expect_refused "rsync --server ." "rsync"
+
+# deploy.sh gets a clean environment: nothing the client sent passes through.
+run_gate "deploy dev abc1234"
+if grep -q '^DEPLOY_ROOT=' "$BIN/env-received" || grep -q '^SSH_ORIGINAL_COMMAND=' "$BIN/env-received"; then
+    not_ok "deploy.sh gets a clean environment"
+else
+    ok "deploy.sh gets a clean environment"
+fi
+
+# rollback.sh gets a clean environment too.
+run_gate "rollback dev previous code"
+if grep -q '^DEPLOY_ROOT=' "$BIN/rollback-env" || grep -q '^SSH_ORIGINAL_COMMAND=' "$BIN/rollback-env"; then
+    not_ok "rollback.sh gets a clean environment"
+else
+    ok "rollback.sh gets a clean environment"
+fi
+
+# Without rollback.sh, a rollback is refused (deploys still work).
+mv "$BIN/rollback.sh" "$BIN/rollback.sh.off"
+expect_refused "rollback dev previous code" "a rollback when rollback.sh is missing"
+expect_accepted "deploy dev abc1234" dev abc1234
+mv "$BIN/rollback.sh.off" "$BIN/rollback.sh"
+
+# The log keeps refused commands printable and short.
+if grep -q 'refused (bad command) from 203.0.113.9: deploy dev abc1234?rm -rf ~' "$BIN/gate.log" \
+    && [ "$(awk '{ if (length > m) m = length } END { print m }' "$BIN/gate.log")" -le 300 ]; then
+    ok "gate.log records refusals on one printable line"
+else
+    not_ok "gate.log records refusals on one printable line"
+fi
+
+# Missing allow-list: everything is refused.
+mv "$BIN/sites.allow" "$BIN/sites.allow.off"
+expect_refused "deploy dev abc1234" "everything when sites.allow is missing"
+mv "$BIN/sites.allow.off" "$BIN/sites.allow"
+
+# ------------------------------------------------------------ DEV and PROD keys
+# The PROD key is forced to "gate.sh prod" and reads sites.allow.prod. The
+# site's own bin/sites/<site>.conf is a second lock: the DEV key never
+# reaches a site with ci_env=production, the PROD key only reaches those.
+echo
+echo "DEV and PROD keys"
+mkdir -p "$BIN/sites"
+printf 'domain=admin-dev.example.com\nci_env=testing\n' > "$BIN/sites/dev.conf"
+printf 'domain=adminpemogan.example.com\nci_env=production\n' > "$BIN/sites/pemogan.conf"
+# Windows line endings and spaces must not hide ci_env=production.
+printf 'domain=admincitarum.example.com\r\n  ci_env = production \r\n' > "$BIN/sites/citarum.conf"
+printf '# sites the PROD key may deploy\npemogan\ncitarum\n' > "$BIN/sites.allow.prod"
+
+as_key dev
+expect_accepted "deploy dev abc1234" dev abc1234
+expect_rollback "rollback dev previous code" dev previous code
+expect_refused "deploy pemogan abc1234" "DEV key: pemogan (not in sites.allow)"
+expect_refused "deploy citarum abc1234" "DEV key: citarum (not in sites.allow)"
+expect_refused "rollback pemogan previous code" "DEV key: a rollback of pemogan"
+expect_refused "rollback citarum previous code-db" "DEV key: a rollback of citarum"
+# Added to sites.allow by mistake: their ci_env=production still stops the DEV key.
+cp "$BIN/sites.allow" "$BIN/sites.allow.saved"
+printf 'pemogan\ncitarum\n' >> "$BIN/sites.allow"
+expect_refused "deploy pemogan abc1234" "DEV key: pemogan even when added to sites.allow by mistake"
+expect_refused "deploy citarum abc1234" "DEV key: citarum (CRLF conf) even when added to sites.allow by mistake"
+expect_refused "rollback pemogan previous code" "DEV key: a rollback of pemogan even when in sites.allow"
+if tail -n1 "$BIN/gate.log" | grep -q 'refused (production site (dev))'; then
+    ok "gate.log says why: production site (dev)"
+else
+    not_ok "gate.log says why: production site (dev)"
+fi
+mv "$BIN/sites.allow.saved" "$BIN/sites.allow"
+
+as_key prod
+expect_accepted "deploy pemogan 0123456789ab" pemogan 0123456789ab
+expect_accepted "deploy citarum 0123456789ab" citarum 0123456789ab
+expect_rollback "rollback pemogan previous code" pemogan previous code
+expect_rollback "rollback citarum 0123456789ab code-db" citarum 0123456789ab code-db
+expect_refused "deploy dev abc1234" "PROD key: dev (not in sites.allow.prod)"
+expect_refused "rollback dev previous code" "PROD key: a rollback of dev"
+expect_refused "deploy staging abc1234" "PROD key: a site only in sites.allow"
+expect_refused "bash" "PROD key: a shell"
+expect_refused "deploy pemogan abc1234; id" "PROD key: a ; command"
+# In sites.allow.prod by mistake, but not a production site: refused.
+printf 'dev\n' >> "$BIN/sites.allow.prod"
+expect_refused "deploy dev abc1234" "PROD key: dev even when added to sites.allow.prod by mistake"
+if tail -n1 "$BIN/gate.log" | grep -q 'refused (not a production site (prod))'; then
+    ok "gate.log says why: not a production site (prod)"
+else
+    not_ok "gate.log says why: not a production site (prod)"
+fi
+printf 'pemogan\ncitarum\n' > "$BIN/sites.allow.prod"
+# A PROD site without its conf file: refused (no ci_env=production to check).
+mv "$BIN/sites/pemogan.conf" "$BIN/sites/pemogan.conf.off"
+expect_refused "deploy pemogan abc1234" "PROD key: a site without bin/sites/<site>.conf"
+mv "$BIN/sites/pemogan.conf.off" "$BIN/sites/pemogan.conf"
+# Missing sites.allow.prod: the PROD key reaches nothing, even with
+# sites.allow present.
+mv "$BIN/sites.allow.prod" "$BIN/sites.allow.prod.off"
+expect_refused "deploy pemogan abc1234" "PROD key: everything when sites.allow.prod is missing"
+mv "$BIN/sites.allow.prod.off" "$BIN/sites.allow.prod"
+
+# deploy.sh gets a clean environment with the PROD key too.
+run_gate "deploy pemogan abc1234"
+if grep -q '^DEPLOY_ROOT=' "$BIN/env-received" || grep -q '^SSH_ORIGINAL_COMMAND=' "$BIN/env-received"; then
+    not_ok "PROD key: deploy.sh gets a clean environment"
+else
+    ok "PROD key: deploy.sh gets a clean environment"
+fi
+
+# Only "prod" is a profile; anything else in command= is refused.
+as_key Prod
+expect_refused "deploy pemogan abc1234" "an unknown profile (Prod)"
+as_key staging
+expect_refused "deploy dev abc1234" "an unknown profile (staging)"
+as_key prod extra
+expect_refused "deploy pemogan abc1234" "two profile arguments"
+as_key ""
+expect_refused "deploy dev abc1234" "an empty profile argument"
+if tail -n1 "$BIN/gate.log" | grep -q 'refused (bad profile)'; then
+    ok "gate.log says why: bad profile"
+else
+    not_ok "gate.log says why: bad profile"
+fi
+as_key dev
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

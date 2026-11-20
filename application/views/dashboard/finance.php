@@ -1,8 +1,6 @@
 <div class="page-inner">
     <?php 
         // Determine active period (default to current month/year if not filtered)
-        $bulan_aktif = isset($_GET['bulan']) ? $_GET['bulan'] : date('m');
-        $tahun_aktif = isset($_GET['tahun']) ? $_GET['tahun'] : date('Y');
         $periode_label = date('F Y', mktime(0, 0, 0, $bulan_aktif, 1, $tahun_aktif));
     ?>
     <div class="d-flex align-items-left align-items-md-center flex-column flex-md-row">

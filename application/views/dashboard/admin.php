@@ -1,7 +1,5 @@
 <?php 
     // Determine active period (default to current month/year if not filtered)
-    $bulan_aktif = isset($_GET['bulan']) ? $_GET['bulan'] : date('m');
-    $tahun_aktif = isset($_GET['tahun']) ? $_GET['tahun'] : date('Y');
     $periode_label = date('F Y', mktime(0, 0, 0, $bulan_aktif, 1, $tahun_aktif));
 ?>
 <div class="page-inner">
@@ -32,7 +30,7 @@
     </div>
     
     <div class="row mt-3">
-        <div class="col-sm-6 col-md-3">
+        <div class="col-sm-6 col-md-4 col-xl">
             <div class="card card-stats card-round">
                 <div class="card-body">
                     <div class="row align-items-center">
@@ -51,7 +49,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-sm-6 col-md-3">
+        <div class="col-sm-6 col-md-4 col-xl">
             <div class="card card-stats card-round">
                 <div class="card-body">
                     <div class="row align-items-center">
@@ -70,7 +68,7 @@
                 </div>
             </div>
         </div> 
-        <div class="col-sm-6 col-md-3">
+        <div class="col-sm-6 col-md-4 col-xl">
             <div class="card card-stats card-round">
                 <div class="card-body">
                     <div class="row align-items-center">
@@ -89,7 +87,26 @@
                 </div>
             </div>
         </div>
-        <div class="col-sm-6 col-md-3">
+        <div class="col-sm-6 col-md-4 col-xl">
+            <div class="card card-stats card-round">
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col-icon">
+                            <div class="icon-big text-center icon-warning bubble-shadow-small">
+                                <i class="fas fa-clipboard-list"></i>
+                            </div>
+                        </div>
+                        <div class="col col-stats ml-3 ml-sm-0">
+                            <div class="numbers">
+                                <p class="card-category">Murid Placement Test</p>
+                                <h4 class="card-title"><?= $total_murid_placement_test ?></h4>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-md-4 col-xl">
             <div class="card card-stats card-round">
                 <div class="card-body">
                     <div class="row align-items-center">

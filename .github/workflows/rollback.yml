@@ -1,0 +1,177 @@
+name: Rollback
+
+# Rolls a site back to an earlier release that is still on the server, by
+# hand only: Actions > Rollback > Run workflow.
+#   dev      admin-dev.englishhubbali.com     run from main
+#   pemogan  adminpemogan.englishhubbali.com  run from production
+#   citarum  admincitarum.englishhubbali.com  run from production
+# The server side is deploy/server/rollback.sh, started by gate.sh; see
+# "Rolling back a live release" in deploy/server/README.md.
+#
+#   code only           switch the code back. Refused when the database has
+#                       migrations the target release doesn't know.
+#   code and database   switch the code back to the previous release AND put
+#                       the database back as it was before the live release
+#                       was deployed. Every database change since then is
+#                       lost from the live database (it is saved first in a
+#                       pre-rollback backup on the server).
+#
+# Uses the site's environment, as Deploy does: "dev" (only runs from main),
+# or "prod-<site>" for a PROD site (only runs from production, waits for the
+# required reviewer's approval, PROD key). No office-hours block: a rollback
+# is an emergency fix. Own concurrency group (rollback-<site>), not Deploy's:
+# GitHub keeps only one waiting run per group, so a shared group would let a
+# newly queued deploy cancel a waiting rollback. A rollback and a deploy still
+# never overlap on the server: its lock refuses the second one ("Another
+# deploy of <site> is running") without changing anything; re-run it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      site:
+        description: Site to roll back (dev from main; pemogan, citarum from production)
+        type: choice
+        options: [dev, pemogan, citarum]
+        default: dev
+      type:
+        description: >-
+          "code only", or "code and database" (back to the previous release
+          only; discards every database change since the live release was
+          deployed, after saving it in a pre-rollback backup)
+        type: choice
+        options: [code only, code and database]
+        default: code only
+      release:
+        description: Release id to go back to (empty = the previous release)
+        required: false
+        default: ""
+      confirm:
+        description: Type the site name again to confirm
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll back ${{ inputs.site }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.site == 'dev' && 'dev' || format('prod-{0}', inputs.site) }}
+    # One rollback of a site at a time, a running one never cancelled. Not
+    # Deploy's group (see above).
+    concurrency:
+      group: rollback-${{ inputs.site }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Check the inputs
+        id: inputs
+        env:
+          SITE: ${{ inputs.site }}
+          CONFIRM: ${{ inputs.confirm }}
+          TYPE: ${{ inputs.type }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "$SITE" ]; then
+            echo "::error::Not confirmed: type the site name ($SITE) in 'confirm'. Nothing was done."
+            exit 1
+          fi
+          case "$TYPE" in
+            "code only") type=code ;;
+            "code and database") type=code-db ;;
+            *) echo "::error::Unknown type."; exit 1 ;;
+          esac
+          target="${RELEASE:-previous}"
+          if ! [[ "$target" =~ ^[0-9A-Za-z._-]{1,64}$ ]] || [[ "$target" == .* || "$target" == -* ]]; then
+            echo "::error::Not a release id: use the id from the Deploy summary (e.g. 0123456789ab), or leave it empty for the previous release."
+            exit 1
+          fi
+          case "$SITE" in
+            dev) domain=admin-dev.englishhubbali.com; env_name=dev ;;
+            pemogan) domain=adminpemogan.englishhubbali.com; env_name=prod-pemogan ;;
+            citarum) domain=admincitarum.englishhubbali.com; env_name=prod-citarum ;;
+            *) echo "::error::Unknown site."; exit 1 ;;
+          esac
+          {
+            echo "type=$type"
+            echo "target=$target"
+            echo "domain=$domain"
+            echo "env_name=$env_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Roll back over SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SITE: ${{ inputs.site }}
+          ENV_NAME: ${{ steps.inputs.outputs.env_name }}
+          TARGET: ${{ steps.inputs.outputs.target }}
+          TYPE: ${{ steps.inputs.outputs.type }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_SSH_KEY DEPLOY_HOST DEPLOY_PORT DEPLOY_USER DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set in the '$ENV_NAME' environment."
+              exit 1
+            fi
+          done
+
+          ssh_dir="$RUNNER_TEMP/ssh"
+          install -m 700 -d "$ssh_dir"
+          # tr: values pasted from Windows may carry CR characters.
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+
+          # Same pinned host key as Deploy; the server side only accepts
+          # "rollback <site> <release-id|previous> <code|code-db>" (gate.sh:
+          # the PROD key only for sites.allow.prod, the DEV key never for a
+          # production site).
+          ssh -i "$ssh_dir/key" -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "rollback $SITE $TARGET $TYPE" \
+            < /dev/null 2>&1 | tee "$RUNNER_TEMP/rollback-output.txt"
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"
+
+      - name: Job summary
+        if: always() && steps.inputs.outcome == 'success'
+        env:
+          SITE: ${{ inputs.site }}
+          DOMAIN: ${{ steps.inputs.outputs.domain }}
+          TYPE: ${{ inputs.type }}
+        run: |
+          set -uo pipefail
+          line="$(grep '^RESULT ' "$RUNNER_TEMP/rollback-output.txt" 2>/dev/null | tail -n1)"
+          field() { printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+          result="$(field result)"; from="$(field from)"; to="$(field to)"
+          backup="$(field backup)"; restored="$(field restored)"
+          case "$result" in
+            rolled-back-manual) shown="✅ rolled back: $to is live" ;;
+            rollback-failed) shown="↩️ failed, undone: $from is live again (and its database, for code and database)" ;;
+            rollback-incomplete) shown="🛑 failed, undo incomplete: maintenance left on, see deploy/server/README.md" ;;
+            failed) shown="❌ refused, nothing changed (see the log above for why)" ;;
+            *) shown="❌ no result from the server (see the Roll back step's log)" ;;
+          esac
+          {
+            echo "### Rollback of $SITE"
+            echo
+            echo "| Site | Type | From | To | Database put back to | Pre-rollback backup | Result |"
+            echo "| --- | --- | --- | --- | --- | --- | --- |"
+            echo "| $SITE ($DOMAIN) | $TYPE | \`${from:--}\` | \`${to:--}\` | ${restored:+\`$restored\`} | ${backup:+\`$backup\`} | $shown |"
+            if [ -n "$restored" ]; then
+              echo
+              echo "The database is as it was at \`$restored\` (its name has the UTC time). Everything written after that is only in the pre-rollback backup."
+            fi
+            echo
+            echo "Server logs: \`~/domains/$DOMAIN/deploy/logs/\` (deploy.log and history.log)."
+          } >> "$GITHUB_STEP_SUMMARY"

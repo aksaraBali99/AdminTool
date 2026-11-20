@@ -1,0 +1,343 @@
+name: Deploy
+
+# Deploys over SSH. See deploy/server/README.md for how the server side works
+# and is set up.
+#
+# DEV (admin-dev.englishhubbali.com), job deploy-dev:
+#   - Automatically, after the "Tests" workflow passes for a push to main
+#     (the exact commit that was tested is deployed), but only while the
+#     repository variable DEPLOY_DEV_ENABLED is "true" (Settings > Secrets
+#     and variables > Actions > Variables). That switches automatic deploys
+#     on and off without editing this file.
+#   - By hand: Actions > Deploy > Run workflow from main, with any branch,
+#     tag or sha as "ref" (used for the first deploy and test drills).
+#     Always allowed: a person starts it, and the "dev" environment only
+#     accepts runs of this workflow from main.
+#   On the server, the DEV key may only run ~/apps/admintool/bin/gate.sh
+#   (sites.allow), which hands the release to deploy.sh next to it.
+#
+# PROD (pemogan = adminpemogan.englishhubbali.com, then citarum =
+# admincitarum.englishhubbali.com), jobs prod-relay, prod-plan,
+# deploy-pemogan, deploy-citarum:
+#   - Automatically, after "Tests" passes for a push to production. A run
+#     started by workflow_run always carries the default branch (main) as
+#     its ref, which the prod-* environments refuse (production only). So
+#     prod-relay starts this workflow again on production (workflow_dispatch)
+#     with the tested sha and the sites whose repository variable
+#     DEPLOY_PROD_PEMOGAN_ENABLED / DEPLOY_PROD_CITARUM_ENABLED is "true";
+#     a site whose variable isn't is skipped, with a message in the summary.
+#   - By hand: Actions > Deploy > Run workflow from production, choosing
+#     the sites (the variables don't matter then). Deploys the tip of
+#     production, or "sha" if given (it must be on production).
+#   - Each site's job runs in its environment (prod-pemogan, prod-citarum):
+#     it waits for the required reviewer, then refuses to start during
+#     office hours (08:00-17:59 WITA, refused from 07:30) or when the commit
+#     is no longer the tip of production, before connecting. Citarum runs only
+#     after Pemogan succeeded when both are chosen. See deploy-site.yml.
+#   On the server, the PROD key may only run "gate.sh prod"
+#   (sites.allow.prod, ci_env=production sites only).
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches: [main, production]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "DEV (run from main): branch, tag or commit to deploy to DEV"
+        required: true
+        default: main
+      prod_sites:
+        description: "PROD (run from production): which sites; Citarum after Pemogan succeeded. Leave 'none (DEV run)' for DEV"
+        type: choice
+        options: [none (DEV run), pemogan, citarum, pemogan then citarum]
+        default: none (DEV run)
+      sha:
+        description: "PROD (run from production): the tip of production's full commit sha (set by the automatic run); empty = the tip of production"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-dev:
+    name: Deploy to DEV
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/production') || (
+        vars.DEPLOY_DEV_ENABLED == 'true' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: dev
+    # One DEV deploy at a time; a running deploy is never cancelled.
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+
+    steps:
+      - name: Not a PROD run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PROD_SITES: ${{ inputs.prod_sites }}
+          SHA_INPUT: ${{ inputs.sha }}
+        run: |
+          if [ "$PROD_SITES" != "none (DEV run)" ] || [ -n "$SHA_INPUT" ]; then
+            echo "::error::PROD inputs (prod_sites or sha) are set on a run from $GITHUB_REF_NAME, which deploys DEV. For PROD, run Deploy from production; for DEV, leave prod_sites on 'none (DEV run)' and sha empty. Nothing was deployed."
+            exit 1
+          fi
+
+      - name: Check out the code to deploy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
+
+      - name: Build the release
+        id: build
+        run: |
+          set -euo pipefail
+          bash deploy/build-release.sh HEAD "$RUNNER_TEMP/release.tar.gz"
+          echo "release_id=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy over SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          RELEASE_ID: ${{ steps.build.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_SSH_KEY DEPLOY_HOST DEPLOY_PORT DEPLOY_USER DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set in the 'dev' environment."
+              exit 1
+            fi
+          done
+
+          ssh_dir="$RUNNER_TEMP/ssh"
+          install -m 700 -d "$ssh_dir"
+          # tr: values pasted from Windows may carry CR characters, which
+          # make ssh reject the key ("invalid format").
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+
+          # The host key is pinned (DEPLOY_KNOWN_HOSTS): an unknown or
+          # changed key stops the deploy. The server side only accepts
+          # "deploy <site> <release-id>" from this key (gate.sh).
+          ssh -i "$ssh_dir/key" -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy dev $RELEASE_ID" \
+            < "$RUNNER_TEMP/release.tar.gz" 2>&1 | tee "$RUNNER_TEMP/deploy-output.txt"
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"
+
+      - name: Job summary
+        if: always() && steps.build.outcome == 'success'
+        env:
+          RELEASE_ID: ${{ steps.build.outputs.release_id }}
+          SHA: ${{ steps.build.outputs.sha }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          set -uo pipefail
+          line="$(grep '^RESULT ' "$RUNNER_TEMP/deploy-output.txt" 2>/dev/null | tail -n1)"
+          field() { printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+          result="$(field result)"; backup="$(field backup)"
+          case "$result" in
+            success) shown="✅ deployed" ;;
+            already-live) shown="✅ already live, nothing changed" ;;
+            rolled-back) shown="↩️ failed, rolled back (previous release live)" ;;
+            rollback-incomplete) shown="🛑 failed, rollback incomplete: maintenance left on, see deploy/server/README.md" ;;
+            failed) shown="❌ failed before anything changed" ;;
+            *) shown="❌ no result from the server (see the Deploy step's log)" ;;
+          esac
+          {
+            echo "### Deploy to DEV"
+            echo
+            echo "| Site | Version | Commit | Release | Backup | Result |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            echo "| dev (admin-dev.englishhubbali.com) | $VERSION | \`${SHA:0:12}\` | \`$RELEASE_ID\` | ${backup:+\`$backup\`} | $shown |"
+            echo
+            echo "Server logs: \`~/domains/admin-dev.englishhubbali.com/deploy/logs/\` (deploy.log and history.log)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------ PROD
+
+  prod-relay:
+    name: Start the PROD deploy
+    # Only for a push to production that passed Tests (never a PR's run).
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'production' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Start Deploy on production with the tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          PEMOGAN_ENABLED: ${{ vars.DEPLOY_PROD_PEMOGAN_ENABLED }}
+          CITARUM_ENABLED: ${{ vars.DEPLOY_PROD_CITARUM_ENABLED }}
+        run: |
+          set -euo pipefail
+          # Same rule as DEPLOY_DEV_ENABLED: "true" in any case switches on.
+          pemogan=no; citarum=no
+          [ "${PEMOGAN_ENABLED,,}" = true ] && pemogan=yes
+          [ "${CITARUM_ENABLED,,}" = true ] && citarum=yes
+          {
+            echo "### Automatic PROD deploy of \`${SHA:0:12}\`"
+            echo
+            if [ "$pemogan" = yes ]; then
+              echo "- pemogan: on (DEPLOY_PROD_PEMOGAN_ENABLED)"
+            else
+              echo "- pemogan: skipped, DEPLOY_PROD_PEMOGAN_ENABLED isn't \"true\""
+            fi
+            if [ "$citarum" = yes ] && [ "$pemogan" = yes ]; then
+              echo "- citarum: on (DEPLOY_PROD_CITARUM_ENABLED), after Pemogan succeeded"
+            elif [ "$citarum" = yes ]; then
+              echo "- citarum: on (DEPLOY_PROD_CITARUM_ENABLED)"
+            else
+              echo "- citarum: skipped, DEPLOY_PROD_CITARUM_ENABLED isn't \"true\""
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$pemogan-$citarum" in
+            yes-yes) sites="pemogan then citarum" ;;
+            yes-no) sites=pemogan ;;
+            no-yes) sites=citarum ;;
+            *)
+              echo "::notice::No PROD site has automatic deploys on (DEPLOY_PROD_PEMOGAN_ENABLED, DEPLOY_PROD_CITARUM_ENABLED); nothing to deploy."
+              echo >> "$GITHUB_STEP_SUMMARY"
+              echo "Nothing started: no PROD site has automatic deploys on." >> "$GITHUB_STEP_SUMMARY"
+              exit 0 ;;
+          esac
+          gh workflow run deploy.yml --repo "$GITHUB_REPOSITORY" --ref production \
+            -f prod_sites="$sites" -f sha="$SHA"
+          echo "Started Deploy on production for: $sites (commit $SHA)."
+          {
+            echo
+            echo "Started **Deploy** on \`production\` for: $sites. Approve each site's job there (Actions > Deploy)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prod-plan:
+    name: Plan the PROD deploy
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      pemogan: ${{ steps.plan.outputs.pemogan }}
+      citarum: ${{ steps.plan.outputs.citarum }}
+    steps:
+      - name: Check out production
+        uses: actions/checkout@v4
+
+      - name: Choose the commit and the sites
+        id: plan
+        env:
+          SHA_INPUT: ${{ inputs.sha }}
+          SITES: ${{ inputs.prod_sites }}
+        run: |
+          set -euo pipefail
+          sha="${SHA_INPUT:-$GITHUB_SHA}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::'sha' must be a full 40-character commit sha (or empty for the tip of production)."
+            exit 1
+          fi
+          # Only the tip of production, so an older commit (a late or re-run
+          # Tests run) never replaces a newer release. Each site checks
+          # again after approval.
+          tip="$(git ls-remote origin refs/heads/production | cut -f1)"
+          if [ "$sha" != "$tip" ]; then
+            echo "::error::$sha is not the tip of production ($tip): a newer commit is on production, and its own run deploys it. Nothing was started."
+            exit 1
+          fi
+          case "$SITES" in
+            "none (DEV run)") echo "::error::Choose the PROD sites in prod_sites. Nothing was started."; exit 1 ;;
+            pemogan) p=true; c=false ;;
+            citarum) p=false; c=true ;;
+            "pemogan then citarum") p=true; c=true ;;
+            *) echo "::error::Unknown prod_sites '$SITES'."; exit 1 ;;
+          esac
+          {
+            echo "sha=$sha"
+            echo "pemogan=$p"
+            echo "citarum=$c"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### PROD deploy plan"
+            echo
+            echo "Commit \`${sha:0:12}\` ($(git log -1 --format=%s "$sha" 2>/dev/null || echo "the tip of production"))"
+            echo
+            echo "- pemogan: $([ "$p" = true ] && echo "yes" || echo "not chosen")"
+            echo "- citarum: $([ "$c" = true ] && { [ "$p" = true ] && echo "yes, after Pemogan succeeded" || echo "yes"; } || echo "not chosen")"
+            echo
+            echo "Each site waits for approval, then refuses to start during office hours (08:00-17:59 WITA; from 07:30, so a deploy can't run into them) or if production has moved on."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-pemogan:
+    name: PROD pemogan
+    needs: prod-plan
+    if: needs.prod-plan.outputs.pemogan == 'true'
+    uses: ./.github/workflows/deploy-site.yml
+    with:
+      site: pemogan
+      domain: adminpemogan.englishhubbali.com
+      sha: ${{ needs.prod-plan.outputs.sha }}
+    secrets: inherit
+
+  deploy-citarum:
+    name: PROD citarum
+    needs: [prod-plan, deploy-pemogan]
+    # always(): also when Pemogan wasn't chosen (its job is then skipped).
+    # When Pemogan was chosen, only after it succeeded.
+    if: >-
+      always() &&
+      needs.prod-plan.result == 'success' &&
+      needs.prod-plan.outputs.citarum == 'true' &&
+      (needs.prod-plan.outputs.pemogan != 'true' || needs.deploy-pemogan.result == 'success')
+    uses: ./.github/workflows/deploy-site.yml
+    with:
+      site: citarum
+      domain: admincitarum.englishhubbali.com
+      sha: ${{ needs.prod-plan.outputs.sha }}
+    secrets: inherit
+
+  citarum-not-run:
+    name: Citarum not deployed (Pemogan didn't succeed)
+    needs: [prod-plan, deploy-pemogan]
+    if: >-
+      always() &&
+      needs.prod-plan.result == 'success' &&
+      needs.prod-plan.outputs.citarum == 'true' &&
+      needs.prod-plan.outputs.pemogan == 'true' &&
+      needs.deploy-pemogan.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Say why
+        env:
+          PEMOGAN_RESULT: ${{ needs.deploy-pemogan.result }}
+        run: |
+          echo "::warning::Citarum was not deployed: Pemogan's deploy didn't succeed ($PEMOGAN_RESULT). Fix Pemogan first, then run Deploy from production again."
+          {
+            echo "### Citarum not deployed"
+            echo
+            echo "Pemogan's deploy didn't succeed (\`$PEMOGAN_RESULT\`), so Citarum was left alone. Nothing was changed on Citarum."
+          } >> "$GITHUB_STEP_SUMMARY"
