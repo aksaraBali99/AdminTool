@@ -455,10 +455,10 @@ $display_invoice_number = isset($invoice_number)
     <script>
         function savePDF() {
             const element = document.querySelector('.invoice-container');
-            const invoiceNumber = 'INV-<?= str_pad($tagihan->id_tagihan, 6, "0", STR_PAD_LEFT) ?>';
+            const invoiceFilename = <?= json_encode($display_invoice_number . '.pdf') ?>;
             const opt = {
                 margin: 10,
-                filename: invoiceNumber + '.pdf',
+                filename: invoiceFilename,
                 image: {
                     type: 'jpeg',
                     quality: 0.98
