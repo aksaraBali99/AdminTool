@@ -258,6 +258,10 @@ class Trans extends CI_Controller
         $this->db->where('id_tagihan', $id_tagihan);
         $items = $this->db->get('tagihan_detail')->result();
 
+        // Format nomor invoice baru: INV Month_Year_000X
+        $month_name = date('F', mktime(0, 0, 0, (int) $tagihan->bulan, 1, (int) $tagihan->tahun));
+        $invoice_number = sprintf('INV %s_%s_%04d', $month_name, $tagihan->tahun, (int) $tagihan->id_tagihan);
+
         // Default company settings
         $apk = (object)[
             'nama_instansi' => 'English Hub',
@@ -266,9 +270,10 @@ class Trans extends CI_Controller
         ];
 
         $data = [
-            'tagihan' => $tagihan,
-            'items' => $items,
-            'apk' => $apk
+            'tagihan'        => $tagihan,
+            'items'          => $items,
+            'apk'            => $apk,
+            'invoice_number' => $invoice_number
         ];
 
         $this->load->view('trans/print_invoice', $data);

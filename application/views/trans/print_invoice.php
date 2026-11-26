@@ -1,10 +1,17 @@
+<?php
+$month_name = date('F', mktime(0, 0, 0, (int) $tagihan->bulan, 1, (int) $tagihan->tahun));
+$display_invoice_number = isset($invoice_number)
+    ? $invoice_number
+    : sprintf('INV %s_%s_%04d', $month_name, $tagihan->tahun, (int) $tagihan->id_tagihan);
+?>
+
 <!DOCTYPE html>
 <html lang="id">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Invoice #<?= str_pad($tagihan->id_tagihan, 6, '0', STR_PAD_LEFT) ?></title>
+    <title><?= html_escape($display_invoice_number) ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -344,7 +351,7 @@
             </div>
             <div class="invoice-title">
                 <h2>INVOICE</h2>
-                <div class="invoice-number">#INV-<?= str_pad($tagihan->id_tagihan, 6, '0', STR_PAD_LEFT) ?></div>
+                <div class="invoice-number"><?= html_escape($display_invoice_number) ?></div>
             </div>
         </div>
 
